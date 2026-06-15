@@ -1,0 +1,12 @@
+{
+  "name": "Short EXP Manager",
+  "short_name": "Short EXP",
+  "description": "จัดการสินค้า Short EXP — 60008 ⇄ 60008-EXP",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#f6f7f9",
+  "theme_color": "#10b981",
+  "lang": "th"
+}

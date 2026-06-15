@@ -12,12 +12,16 @@ export function CameraScanner({
   onClose: () => void;
 }) {
   const scannerRef = useRef<any>(null);
+  const startedRef = useRef(false);
+  const decodedRef = useRef<string | null>(null);
   const [err, setErr] = useState<string>("");
   const [status, setStatus] = useState<"starting" | "scanning" | "stopped">("starting");
-  const decodedRef = useRef<string | null>(null);
+  const [isIOS, setIsIOS] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
+    setIsIOS(/iPhone|iPad|iPod/i.test(navigator.userAgent ?? ""));
+
     (async () => {
       try {
         if (typeof window !== "undefined" && !window.isSecureContext) {
@@ -29,8 +33,6 @@ export function CameraScanner({
 
         const scanner = new Html5Qrcode(REGION_ID, {
           verbose: false,
-          // Restrict to the 1D + QR formats actually used on Thai pharmacy items.
-          // Fewer formats = faster decode loop = fewer false negatives.
           formatsToSupport: [
             Html5QrcodeSupportedFormats.EAN_13,
             Html5QrcodeSupportedFormats.EAN_8,
@@ -46,15 +48,12 @@ export function CameraScanner({
 
         const scanConfig: any = {
           fps: 20,
-          // 1D barcodes are wide rectangles — give them a wide scan window.
           qrbox: (vw: number, vh: number) => {
             const w = Math.min(Math.round(vw * 0.92), 520);
             const h = Math.min(Math.round(vh * 0.35), 200);
             return { width: w, height: h };
           },
           aspectRatio: window.innerHeight > window.innerWidth ? 1.3333 : 1.7777,
-          // Use Chrome's native BarcodeDetector when available — much faster
-          // and more accurate than ZXing on Android.
           experimentalFeatures: { useBarCodeDetectorIfSupported: true },
         };
 
@@ -64,87 +63,72 @@ export function CameraScanner({
           if (!txt || decodedRef.current === txt) return;
           decodedRef.current = txt;
           try {
-            if (typeof navigator !== "undefined" && navigator.vibrate)
-              navigator.vibrate(80);
+            if (navigator.vibrate) navigator.vibrate(80);
           } catch {}
           onResult(txt);
         };
 
-        // Start with strict back camera + high resolution. Fall back gently
-        // if the device rejects "exact" or the resolution.
-        const constraintTiers: any[] = [
+        // Single start call. Browser picks the best-fit constraint and
+        // gracefully downgrades resolution if 1080p isn't available — no
+        // retry loop, so we never re-enter the scanner mid-transition.
+        await scanner.start(
           {
-            facingMode: { exact: "environment" },
+            facingMode: { ideal: "environment" },
             width: { ideal: 1920 },
             height: { ideal: 1080 },
-          },
-          {
-            facingMode: { exact: "environment" },
-            width: { ideal: 1280 },
-            height: { ideal: 720 },
-          },
-          { facingMode: { exact: "environment" } },
-          { facingMode: "environment" },
-        ];
+          } as any,
+          scanConfig,
+          onDecode,
+          () => {},
+        );
 
-        let started = false;
-        let lastErr: any = null;
-        for (const c of constraintTiers) {
+        if (cancelled) {
+          // Modal was closed before start resolved — tear down now
           try {
-            await scanner.start(c, scanConfig, onDecode, () => {});
-            started = true;
-            break;
-          } catch (e) {
-            lastErr = e;
-          }
+            await scanner.stop();
+            scanner.clear();
+          } catch {}
+          return;
         }
-
-        // As a last resort, walk the camera list and pick something
-        // "back"-shaped if even facingMode failed.
-        if (!started) {
-          try {
-            const cams = await Html5Qrcode.getCameras();
-            const back =
-              cams.find((c: any) => /back|environment|rear/i.test(c.label)) ?? cams[0];
-            if (back) {
-              await scanner.start(back.id, scanConfig, onDecode, () => {});
-              started = true;
-            }
-          } catch (e) {
-            lastErr = e;
-          }
-        }
-
-        if (!started) {
-          throw lastErr ?? new Error("เปิดกล้องไม่สำเร็จ");
-        }
-        if (!cancelled) setStatus("scanning");
+        startedRef.current = true;
+        setStatus("scanning");
       } catch (e: any) {
         if (cancelled) return;
         const msg = String(e?.message ?? e ?? "เปิดกล้องไม่สำเร็จ");
         if (/permission|denied|notallowed/i.test(msg)) {
           setErr("ไม่ได้รับสิทธิ์เข้าถึงกล้อง — กรุณาอนุญาตในเบราว์เซอร์");
         } else if (/notfound|no.*cam|overconstrained/i.test(msg)) {
-          setErr("ไม่พบกล้องหลังบนอุปกรณ์นี้");
+          setErr("ไม่พบกล้องบนอุปกรณ์นี้");
+        } else if (/transition/i.test(msg)) {
+          setErr("กล้องยังกำลังเริ่มทำงาน — ลองปิดและเปิดใหม่อีกครั้ง");
         } else {
           setErr(msg);
         }
         setStatus("stopped");
       }
     })();
+
     return () => {
       cancelled = true;
       const s = scannerRef.current;
-      if (s) {
-        s.stop()
-          .catch(() => {})
-          .then(() => {
-            try {
-              s.clear();
-            } catch {}
-          })
-          .catch(() => {});
-      }
+      if (!s) return;
+      // Only stop if we successfully started — calling stop() during the
+      // start transition is what triggers "Cannot Transition" errors.
+      if (!startedRef.current) return;
+      try {
+        const state = typeof s.getState === "function" ? s.getState() : 2;
+        // Html5QrcodeScannerState: NOT_STARTED=1, SCANNING=2, PAUSED=3
+        if (state === 2 || state === 3) {
+          s.stop()
+            .catch(() => {})
+            .then(() => {
+              try {
+                s.clear();
+              } catch {}
+            })
+            .catch(() => {});
+        }
+      } catch {}
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -185,8 +169,17 @@ export function CameraScanner({
           </div>
         )}
 
+        {isIOS && (
+          <div className="mx-3 mb-3 px-3 py-2 bg-amber-50 text-amber-800 text-[11px] rounded-lg border border-amber-200">
+            <span className="font-semibold">iOS Safari:</span> ถ้าไม่อยากกดอนุญาตทุกครั้ง
+            ให้กดปุ่ม Share <span className="font-mono">⤴</span> →{" "}
+            <span className="font-mono">"Add to Home Screen"</span> →
+            เปิดผ่านไอคอนบนหน้าจอหลัก สิทธิ์กล้องจะค้างไว้ถาวร
+          </div>
+        )}
+
         <div className="px-4 py-3 text-[11px] text-slate-500 border-t border-slate-100">
-          กล้องหลัง · EAN-13 / Code-128 / QR · ระยะที่ดี 10-20 cm — ค้างนิ่งให้กล้องโฟกัส
+          กล้องหลัง · EAN-13 / Code-128 / QR · ระยะที่ดี 10-20 cm
         </div>
       </div>
     </div>
