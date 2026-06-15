@@ -55,6 +55,14 @@ export function CameraScanner({
           },
           aspectRatio: window.innerHeight > window.innerWidth ? 1.3333 : 1.7777,
           experimentalFeatures: { useBarCodeDetectorIfSupported: true },
+          // Detailed MediaTrackConstraints belong here, not in the first
+          // argument of start() — html5-qrcode requires that arg to have
+          // exactly one of facingMode / deviceId.
+          videoConstraints: {
+            facingMode: { ideal: "environment" },
+            width: { ideal: 1920 },
+            height: { ideal: 1080 },
+          },
         };
 
         const onDecode = (decodedText: string) => {
@@ -68,15 +76,11 @@ export function CameraScanner({
           onResult(txt);
         };
 
-        // Single start call. Browser picks the best-fit constraint and
-        // gracefully downgrades resolution if 1080p isn't available — no
-        // retry loop, so we never re-enter the scanner mid-transition.
+        // Single start call. The first arg must have exactly 1 key
+        // (facingMode OR deviceId). The full constraints (resolution etc.)
+        // are handed in via scanConfig.videoConstraints above.
         await scanner.start(
-          {
-            facingMode: { ideal: "environment" },
-            width: { ideal: 1920 },
-            height: { ideal: 1080 },
-          } as any,
+          { facingMode: "environment" } as any,
           scanConfig,
           onDecode,
           () => {},
