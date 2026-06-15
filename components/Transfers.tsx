@@ -23,7 +23,7 @@ import {
 export function Transfers() {
   const [items, setItems] = useState<Transfer[]>([]);
   const [printing, setPrinting] = useState<Transfer | null>(null);
-  const [filter, setFilter] = useState<"all" | "open" | "closed">("all");
+  const [filter, setFilter] = useState<"all" | "open" | "closed" | "applied">("all");
   const [q, setQ] = useState("");
 
   async function refresh() {
@@ -36,7 +36,8 @@ export function Transfers() {
   const filtered = useMemo(() => {
     return items.filter((t) => {
       if (filter === "open" && t.closed) return false;
-      if (filter === "closed" && !t.closed) return false;
+      if (filter === "closed" && (!t.closed || t.applied)) return false;
+      if (filter === "applied" && !t.applied) return false;
       if (q) {
         const s = q.toLowerCase();
         const hay = `${t.externalDocNo ?? ""} ${t.id}`.toLowerCase();
@@ -48,13 +49,16 @@ export function Transfers() {
 
   const stats = useMemo(() => {
     const open = items.filter((t) => !t.closed).length;
-    const closed = items.filter((t) => t.closed).length;
-    const lines = items.reduce((a, t) => a + t.lines.length, 0);
-    const moveQty = items.reduce(
-      (a, t) => a + t.lines.filter((l) => !l.alreadyExp).reduce((s, l) => s + l.quantity, 0),
-      0,
-    );
-    return { total: items.length, open, closed, lines, moveQty };
+    const closed = items.filter((t) => t.closed && !t.applied).length;
+    const applied = items.filter((t) => t.applied).length;
+    const pendingMoveQty = items
+      .filter((t) => !t.applied)
+      .reduce(
+        (a, t) =>
+          a + t.lines.filter((l) => !l.alreadyExp).reduce((s, l) => s + l.quantity, 0),
+        0,
+      );
+    return { total: items.length, open, closed, applied, pendingMoveQty };
   }, [items]);
 
   async function editDocNo(t: Transfer) {
@@ -69,6 +73,12 @@ export function Transfers() {
   }
 
   async function reopen(t: Transfer) {
+    if (t.applied) {
+      alert(
+        "ลังนี้ถูก Apply โดย D365 แล้ว (Ledger ใหม่ยืนยันการโอน)\nหากจะแก้กลับ ต้องไปยกเลิก TO ใน D365 และอัพโหลด Ledger ที่ไม่มี External Doc นี้ก่อน",
+      );
+      return;
+    }
     if (
       !confirm(
         "ยกเลิกเอกสารเพื่อกลับมาแก้ไข?\nลังจะถูกปลดล็อกเพื่อเพิ่ม/ลด/ลบ line ได้ใหม่",
@@ -90,12 +100,10 @@ export function Transfers() {
   }
 
   async function remove(t: Transfer) {
-    if (
-      !confirm(
-        "ลบลังนี้?\nยอดที่จองไว้จะถูกคืนกลับเป็น available ใน lot นั้น",
-      )
-    )
-      return;
+    const msg = t.applied
+      ? "ลบประวัติลังนี้?\nลังนี้ถูก Apply โดย D365 แล้ว — การลบจะลบเฉพาะ record ในแอป (ไม่กระทบ Ledger)"
+      : "ลบลังนี้?\nยอดที่จองไว้จะถูกคืนกลับเป็น available ใน lot นั้น";
+    if (!confirm(msg)) return;
     await deleteTransferAndRevert(t.id);
     await refresh();
   }
@@ -117,18 +125,19 @@ export function Transfers() {
   return (
     <div className="space-y-5">
       {/* Stats */}
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-3 no-print">
+      <div className="grid grid-cols-2 md:grid-cols-5 gap-3 no-print">
         <StatCard label="ทั้งหมด" value={stats.total} tone="slate" />
         <StatCard label="เปิดอยู่" value={stats.open} tone="amber" />
-        <StatCard label="ปิดแล้ว" value={stats.closed} tone="emerald" />
-        <StatCard label="ยอดที่ต้องโอนรวม" value={stats.moveQty} tone="indigo" />
+        <StatCard label="ปิดแล้ว (รอ D365)" value={stats.closed} tone="indigo" />
+        <StatCard label="Applied" value={stats.applied} tone="emerald" />
+        <StatCard label="qty ที่ยังจอง" value={stats.pendingMoveQty} tone="slate" />
       </div>
 
       {/* Toolbar */}
       <div className="flex flex-wrap items-center gap-2 no-print">
         <div className="flex bg-slate-100 p-1 rounded-lg">
-          {(["all", "open", "closed"] as const).map((k) => {
-            const labels = { all: "ทั้งหมด", open: "เปิดอยู่", closed: "ปิดแล้ว" };
+          {(["all", "open", "closed", "applied"] as const).map((k) => {
+            const labels = { all: "ทั้งหมด", open: "เปิดอยู่", closed: "รอ D365", applied: "Applied" };
             const on = filter === k;
             return (
               <button
@@ -211,7 +220,12 @@ export function Transfers() {
                     </td>
                     <td className="px-4 py-2.5 text-right text-emerald-600">{already}</td>
                     <td className="px-4 py-2.5 text-center">
-                      <StatusBadge closed={t.closed} />
+                      <StatusBadge closed={t.closed} applied={t.applied} />
+                      {t.applied && t.appliedAt && (
+                        <div className="text-[9px] text-slate-400 mt-0.5">
+                          {new Date(t.appliedAt).toLocaleDateString("th-TH")}
+                        </div>
+                      )}
                     </td>
                     <td className="px-4 py-2.5">
                       <div className="flex gap-1 justify-end">
@@ -228,7 +242,7 @@ export function Transfers() {
                         >
                           <DownloadIcon />
                         </IconBtn>
-                        {t.closed ? (
+                        {t.applied ? null : t.closed ? (
                           <IconBtn
                             onClick={() => reopen(t)}
                             title="ยกเลิกเอกสาร (Reopen)"
@@ -286,12 +300,22 @@ function StatCard({
   );
 }
 
-function StatusBadge({ closed }: { closed: boolean }) {
-  return closed ? (
-    <span className="inline-flex items-center gap-1 px-2 py-0.5 bg-slate-900 text-white text-[10px] font-semibold rounded-full">
-      <LockIcon className="w-3 h-3" /> ปิดแล้ว
-    </span>
-  ) : (
+function StatusBadge({ closed, applied }: { closed: boolean; applied?: boolean }) {
+  if (applied) {
+    return (
+      <span className="inline-flex items-center gap-1 px-2 py-0.5 bg-emerald-600 text-white text-[10px] font-semibold rounded-full">
+        <CheckIcon className="w-3 h-3" /> Applied
+      </span>
+    );
+  }
+  if (closed) {
+    return (
+      <span className="inline-flex items-center gap-1 px-2 py-0.5 bg-indigo-600 text-white text-[10px] font-semibold rounded-full">
+        <LockIcon className="w-3 h-3" /> รอ D365
+      </span>
+    );
+  }
+  return (
     <span className="inline-flex items-center gap-1 px-2 py-0.5 bg-amber-100 text-amber-700 text-[10px] font-semibold rounded-full">
       <AlertIcon className="w-3 h-3" /> เปิดอยู่
     </span>

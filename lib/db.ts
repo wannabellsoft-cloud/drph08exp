@@ -30,6 +30,14 @@ export class AppDB extends Dexie {
         .filter((e: LedgerEntry) => !!e.sourceTransferId)
         .delete();
     });
+    // v4 adds an index on Ledger.externalDocNo so we can quickly detect
+    // when D365 has applied a TO; and an applied index on Transfers.
+    this.version(4).stores({
+      items: "itemNo, barcode, description",
+      ledger:
+        "entryNo, itemNo, locationCode, lotNo, externalDocNo, sourceTransferId, [itemNo+locationCode], [itemNo+lotNo+locationCode]",
+      transfers: "id, externalDocNo, closed, applied, createdAt",
+    });
   }
 }
 
@@ -77,11 +85,12 @@ export async function stockForItem(itemNo: string): Promise<StockSummary> {
     }
   }
 
-  // Subtract reservations from every Transfer (open OR closed). Already-EXP
-  // lines also reserve their lot at 60008-EXP because the qty is committed
-  // to a specific carton until the transfer is cancelled.
+  // Subtract reservations from every Transfer that is NOT yet applied.
+  // Applied transfers have already been processed by D365 — the new Ledger
+  // upload reflects the move, so reserving again would double-count.
   const transfers = await db().transfers.toArray();
   for (const t of transfers) {
+    if (t.applied) continue;
     for (const l of t.lines) {
       if (l.itemNo !== itemNo) continue;
       const loc = l.alreadyExp ? "60008-EXP" : "60008";
@@ -141,6 +150,38 @@ export async function appendLedger(entries: LedgerEntry[]) {
     await db().ledger.bulkPut(entries.slice(i, i + CHUNK));
   }
   return entries.length;
+}
+
+// Scan the current Ledger for External Document Numbers that match any
+// closed-not-yet-applied transfer and flip those transfers to applied.
+// Run this after every Ledger upload — it's idempotent.
+export async function markAppliedFromLedger(): Promise<{
+  newlyApplied: number;
+  appliedDocs: string[];
+}> {
+  const docs = new Set<string>();
+  await db().ledger.each((e) => {
+    if (e.sourceTransferId) return; // defensive: ignore any legacy synthetic
+    const d = (e.externalDocNo ?? "").trim();
+    if (d) docs.add(d);
+  });
+
+  const transfers = await db().transfers.toArray();
+  const toUpdate: Transfer[] = [];
+  for (const t of transfers) {
+    if (t.applied) continue;
+    if (!t.closed) continue;
+    const d = (t.externalDocNo ?? "").trim();
+    if (!d) continue;
+    if (docs.has(d)) {
+      toUpdate.push({ ...t, applied: true, appliedAt: new Date().toISOString() });
+    }
+  }
+  if (toUpdate.length) await db().transfers.bulkPut(toUpdate);
+  return {
+    newlyApplied: toUpdate.length,
+    appliedDocs: toUpdate.map((t) => t.externalDocNo!).filter(Boolean),
+  };
 }
 
 export async function saveTransfer(t: Transfer) {

@@ -1,8 +1,15 @@
 "use client";
 import { useEffect, useState } from "react";
 import { readWorkbook, sheetRows, parseItemMaster, parseLedger } from "@/lib/excel";
-import { upsertItems, replaceLedger, appendLedger, clearAll, db } from "@/lib/db";
-import { UploadIcon, DatabaseIcon, CheckIcon, TrashIcon } from "./Icons";
+import {
+  upsertItems,
+  replaceLedger,
+  appendLedger,
+  clearAll,
+  markAppliedFromLedger,
+  db,
+} from "@/lib/db";
+import { UploadIcon, DatabaseIcon, CheckIcon, TrashIcon, AlertIcon } from "./Icons";
 
 type Mode = "items" | "ledger-replace" | "ledger-append";
 
@@ -52,9 +59,17 @@ export function Upload() {
       const rows = sheetRows(wb);
       const entries = parseLedger(rows);
       const n = replace ? await replaceLedger(entries) : await appendLedger(entries);
+      // Auto-detect transfers that D365 has already processed
+      const { newlyApplied, appliedDocs } = await markAppliedFromLedger();
+      const tail =
+        newlyApplied > 0
+          ? ` • Mark applied อัตโนมัติ ${newlyApplied} ลัง (${appliedDocs.slice(0, 3).join(", ")}${
+              appliedDocs.length > 3 ? "…" : ""
+            })`
+          : "";
       setMsg({
         kind: "ok",
-        text: `${replace ? "แทนที่" : "เพิ่ม"} Ledger สำเร็จ: ${n.toLocaleString()} รายการ`,
+        text: `${replace ? "แทนที่" : "เพิ่ม"} Ledger สำเร็จ: ${n.toLocaleString()} รายการ${tail}`,
       });
       await refreshCounts();
     } catch (e: any) {
@@ -121,6 +136,37 @@ export function Upload() {
           {msg.text}
         </div>
       )}
+
+      {/* How it works */}
+      <div className="bg-indigo-50/50 border border-indigo-200 rounded-2xl p-5">
+        <div className="flex items-start gap-3">
+          <div className="w-8 h-8 rounded-lg bg-indigo-100 text-indigo-600 grid place-items-center shrink-0">
+            <AlertIcon className="w-4 h-4" />
+          </div>
+          <div className="flex-1 text-sm text-indigo-900">
+            <div className="font-semibold mb-1">วิธี sync กับ D365 (อ่านสักครั้งเพื่อเข้าใจ)</div>
+            <ul className="list-disc list-inside space-y-1 text-indigo-800 text-[13px]">
+              <li>
+                <b>Upload Ledger ใหม่ทุกเช้า</b> → ระบบจะคำนวณ Remaining ตามค่าจริงจาก D365
+                และหัก qty ที่ยังจองอยู่ในลังที่ "เปิด" หรือ "รอ D365" → ได้ Available ที่ถูกต้อง
+              </li>
+              <li>
+                ระบบ <b>auto-detect</b>: ลังที่ <code>External Doc No.</code> ของมันมาปรากฏใน
+                Ledger ใหม่ = D365 จัดการแล้ว → mark เป็น <span className="font-mono">Applied</span>{" "}
+                อัตโนมัติ → เลิกจอง qty นั้น
+              </li>
+              <li>
+                ลังที่ <b>ปิดแล้วแต่ยังไม่ Applied</b> (Excel ยังไม่ได้ import / D365 ยังไม่ post)
+                จะยังจอง qty ต่อไป จนกว่า Ledger รอบถัดไปจะยืนยัน
+              </li>
+              <li>
+                ระหว่างวัน: <b>ยอดขาย</b> ทำให้ Ledger Remaining ลดลง → upload Ledger รอบใหม่
+                Available จะอัพเดตอัตโนมัติ (ไม่ทับซ้อน)
+              </li>
+            </ul>
+          </div>
+        </div>
+      </div>
 
       {/* Danger zone */}
       <div className="bg-rose-50/40 border border-rose-200 rounded-2xl p-5">

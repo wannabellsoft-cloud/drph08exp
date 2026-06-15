@@ -45,6 +45,11 @@ export type Transfer = {
   createdAt: string;
   closedAt?: string;
   closed: boolean;
+  // applied = D365 processed this transfer (the new Ledger upload contains
+  // entries tagged with this externalDocNo). Applied transfers no longer
+  // reserve stock — the Ledger now reflects the move.
+  applied?: boolean;
+  appliedAt?: string;
   cartonNo?: string;
   note?: string;
   lines: TransferLine[];
