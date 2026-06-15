@@ -80,13 +80,11 @@ export function parseLedger(rows: Record<string, unknown>[]): LedgerEntry[] {
 }
 
 // ---------- Export TO Excel (BC import format) ----------
-export function exportTransferToBC(t: Transfer): Blob {
+// Build H + L rows for one Transfer, skipping already-EXP (reference) lines.
+function transferToRows(t: Transfer): any[] {
   const out: any[] = [];
-  // Only export lines that are actually moving (i.e., not already at the destination)
   const movingLines = t.lines.filter((l) => !l.alreadyExp);
-  if (movingLines.length === 0) {
-    // Still produce a stub
-  }
+  if (movingLines.length === 0) return out;
   out.push({
     "Header And Line": "H",
     "Store-from": t.storeFrom,
@@ -111,7 +109,11 @@ export function exportTransferToBC(t: Transfer): Blob {
       "External Document No.": t.externalDocNo ?? "",
     });
   }
-  const ws = XLSX.utils.json_to_sheet(out, {
+  return out;
+}
+
+function rowsToWorkbook(rows: any[]): Blob {
+  const ws = XLSX.utils.json_to_sheet(rows, {
     header: [
       "Header And Line",
       "Store-from",
@@ -130,6 +132,52 @@ export function exportTransferToBC(t: Transfer): Blob {
   return new Blob([buf], {
     type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
   });
+}
+
+// Export multiple transfers into one BC import file.
+// Skips transfers that don't have an External Doc No. (still open) or have
+// no movable lines (only reference rows). Returns the file plus counts.
+export function exportTransfersToBC(transfers: Transfer[]): {
+  blob: Blob;
+  included: number;
+  skipped: number;
+} {
+  const rows: any[] = [];
+  let included = 0;
+  let skipped = 0;
+  for (const t of transfers) {
+    if (!t.externalDocNo) {
+      skipped++;
+      continue;
+    }
+    const sub = transferToRows(t);
+    if (sub.length === 0) {
+      skipped++;
+      continue;
+    }
+    rows.push(...sub);
+    included++;
+  }
+  return { blob: rowsToWorkbook(rows), included, skipped };
+}
+
+export function exportTransferToBC(t: Transfer): Blob {
+  const rows = transferToRows(t);
+  if (rows.length === 0) {
+    // Produce an empty stub with just the header row so the file is valid
+    rows.push({
+      "Header And Line": "H",
+      "Store-from": t.storeFrom,
+      "Location-from Code": t.locationFrom,
+      "Store-to": t.storeTo,
+      "Location-to Code": t.locationTo,
+      "Item No.": "",
+      Quantity: "",
+      "Lot No.": "",
+      "External Document No.": t.externalDocNo ?? "",
+    });
+  }
+  return rowsToWorkbook(rows);
 }
 
 export function downloadBlob(blob: Blob, filename: string) {

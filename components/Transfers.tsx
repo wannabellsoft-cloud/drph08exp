@@ -7,7 +7,7 @@ import {
   reopenTransfer,
   deleteTransferAndRevert,
 } from "@/lib/db";
-import { exportTransferToBC, downloadBlob } from "@/lib/excel";
+import { exportTransferToBC, exportTransfersToBC, downloadBlob } from "@/lib/excel";
 import type { Transfer } from "@/lib/types";
 import {
   PrintIcon,
@@ -122,6 +122,31 @@ export function Transfers() {
     downloadBlob(blob, `${t.externalDocNo || t.id}.xlsx`);
   }
 
+  function exportAll() {
+    if (filtered.length === 0) {
+      alert("ไม่มีลังให้ export");
+      return;
+    }
+    const { blob, included, skipped } = exportTransfersToBC(filtered);
+    if (included === 0) {
+      alert(
+        "ไม่มีลังที่ export ได้ในรายการที่กรอง\n— ลังต้องมี External Doc No. และมี line ที่ต้องโอน (ไม่ใช่ Ref ล้วน)",
+      );
+      return;
+    }
+    const today = new Date().toISOString().slice(0, 10);
+    downloadBlob(blob, `TO08EXP-batch-${today}.xlsx`);
+    if (skipped > 0) {
+      setTimeout(
+        () =>
+          alert(
+            `Export Excel สำเร็จ\n• รวมในไฟล์: ${included} ลัง\n• ข้าม: ${skipped} ลัง (ไม่มี External Doc No. หรือไม่มีรายการต้องโอน)`,
+          ),
+        100,
+      );
+    }
+  }
+
   return (
     <div className="space-y-5">
       {/* Stats */}
@@ -158,6 +183,14 @@ export function Transfers() {
           placeholder="ค้นหา External Doc No. หรือ Carton ID"
           className="flex-1 min-w-[200px] px-3 py-1.5 text-sm border border-slate-200 rounded-lg focus:outline-none focus:border-emerald-400 focus:ring-2 focus:ring-emerald-100"
         />
+        <button
+          onClick={exportAll}
+          disabled={filtered.length === 0}
+          title="รวมทุกลังที่กรองอยู่เป็นไฟล์ Excel เดียว"
+          className="flex items-center gap-1.5 px-3 py-1.5 bg-emerald-600 text-white text-sm font-medium rounded-lg hover:bg-emerald-700 disabled:opacity-30 disabled:cursor-not-allowed shadow-sm transition"
+        >
+          <DownloadIcon /> Export Excel ทุกใบ ({filtered.length})
+        </button>
       </div>
 
       {/* List */}

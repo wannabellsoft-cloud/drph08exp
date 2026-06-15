@@ -73,7 +73,7 @@ export default function Home() {
       </main>
 
       <footer className="max-w-7xl mx-auto px-4 lg:px-6 py-6 text-xs text-slate-400 no-print">
-        ข้อมูลทั้งหมดเก็บใน Browser (IndexedDB) — Export Excel ก่อนเพื่อนำไป Import เข้า Microsoft Dynamics 365
+        ข้อมูลเก็บใน Supabase Cloud — ทุกเครื่องที่เปิด URL เดียวกันเห็นข้อมูลเดียวกัน · Export Excel เพื่อนำไป Import เข้า Microsoft Dynamics 365
       </footer>
     </div>
   );
