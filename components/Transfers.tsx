@@ -434,6 +434,14 @@ function PrintCover({ t, onDone }: { t: Transfer; onDone: () => void }) {
         emptyText="ไม่มี"
         tone="emerald"
       />
+      {t.lines.some((l) => l.journalEntryId) && (
+        <div className="mt-3 text-[11px] text-indigo-800 bg-indigo-50 border border-indigo-200 rounded p-2">
+          <span className="font-bold">หมายเหตุ:</span> รายการที่มีป้าย{" "}
+          <span className="font-mono font-bold">รอ Journal</span>{" "}
+          ต้อง Import Item Journal แยกใน D365 หลัง Transfer Order เสร็จแล้ว
+          เพื่อเปลี่ยน LOT/EXP เป็นค่าใหม่ที่ 60008-EXP
+        </div>
+      )}
 
       <div className="grid grid-cols-3 gap-8 mt-12 text-sm">
         <Sig label="ผู้จัดลัง" />
@@ -500,17 +508,58 @@ function Section({
             </tr>
           </thead>
           <tbody>
-            {rows.map((l, i) => (
-              <tr key={i} className="border-b border-slate-200">
-                <td className="p-1.5">{i + 1}</td>
-                <td className="p-1.5 font-mono">{l.itemNo}</td>
-                <td className="p-1.5">{l.description}</td>
-                <td className="p-1.5 font-mono">{l.lotNo}</td>
-                <td className="p-1.5">{l.expirationDate || "-"}</td>
-                <td className="p-1.5 text-right font-semibold">{l.quantity}</td>
-                <td className="p-1.5">{l.uom || ""}</td>
-              </tr>
-            ))}
+            {rows.map((l, i) => {
+              const hasJournal = !!l.journalEntryId;
+              const displayLot = hasJournal && l.newLotNo ? l.newLotNo : l.lotNo;
+              const displayExp =
+                hasJournal && l.newExpirationDate
+                  ? l.newExpirationDate
+                  : l.expirationDate || "-";
+              const expChanged =
+                hasJournal &&
+                (l.expirationDate || "") !== (l.newExpirationDate || "");
+              return (
+                <tr
+                  key={i}
+                  className={`border-b border-slate-200 ${
+                    hasJournal ? "bg-indigo-50/40" : ""
+                  }`}
+                >
+                  <td className="p-1.5 align-top">{i + 1}</td>
+                  <td className="p-1.5 font-mono align-top">{l.itemNo}</td>
+                  <td className="p-1.5 align-top">{l.description}</td>
+                  <td className="p-1.5 align-top">
+                    <div className="font-mono font-semibold">{displayLot}</div>
+                    {hasJournal && (
+                      <>
+                        <div className="text-[10px] mt-0.5">
+                          <span className="inline-block px-1 py-0.5 bg-indigo-600 text-white font-semibold rounded">
+                            รอ Journal @60008-EXP
+                          </span>
+                        </div>
+                        <div className="text-[10px] text-slate-500 mt-0.5">
+                          เดิม:{" "}
+                          <span className="font-mono line-through">{l.lotNo}</span>
+                        </div>
+                      </>
+                    )}
+                  </td>
+                  <td className="p-1.5 align-top">
+                    <div className={hasJournal ? "font-semibold" : ""}>{displayExp}</div>
+                    {expChanged && (
+                      <div className="text-[10px] text-slate-500 mt-0.5">
+                        เดิม:{" "}
+                        <span className="line-through">{l.expirationDate || "-"}</span>
+                      </div>
+                    )}
+                  </td>
+                  <td className="p-1.5 text-right font-semibold align-top">
+                    {l.quantity}
+                  </td>
+                  <td className="p-1.5 align-top">{l.uom || ""}</td>
+                </tr>
+              );
+            })}
           </tbody>
         </table>
       )}
