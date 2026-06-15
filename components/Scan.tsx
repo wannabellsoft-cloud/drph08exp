@@ -210,53 +210,59 @@ export function Scan() {
       return;
     }
 
-    const c = await ensureCarton();
-    if (c.closed) {
-      pushToast("err", "ลังนี้ปิดแล้ว");
-      return;
+    try {
+      const c = await ensureCarton();
+      if (c.closed) {
+        pushToast("err", "ลังนี้ปิดแล้ว");
+        return;
+      }
+
+      const journalId = uid("J");
+      const journal: ItemJournalEntry = {
+        id: journalId,
+        documentNo: d.documentNo.trim(),
+        itemNo: d.itemNo,
+        description: d.description,
+        locationCode: JOURNAL_LOCATION, // always 60008-EXP for the journal
+        quantity: d.quantity,
+        uom: d.uom,
+        oldLotNo: d.oldLotNo,
+        oldExpirationDate: d.oldExpirationDate,
+        newLotNo: d.newLotNo.trim(),
+        newExpirationDate: d.newExpirationDate || undefined,
+        createdAt: new Date().toISOString(),
+        exported: false,
+        cartonId: c.id,
+      };
+      await saveJournalEntry(journal);
+
+      const line: TransferLine = {
+        itemNo: d.itemNo,
+        description: d.description,
+        quantity: d.quantity,
+        lotNo: d.oldLotNo, // TO moves with the OLD lot — Journal renames it at destination
+        expirationDate: d.oldExpirationDate,
+        uom: d.uom,
+        alreadyExp: d.sourceLocation === LOC_EXP,
+        journalEntryId: journalId,
+        newLotNo: d.newLotNo.trim(),
+        newExpirationDate: d.newExpirationDate || undefined,
+      };
+      const lines = [...c.lines, line];
+      const next = { ...c, lines };
+      await saveTransfer(next);
+      setCarton(next);
+      setEditDraft(null);
+      await refreshStockOf(d.itemNo);
+      pushToast(
+        "ok",
+        `แก้ LOT ${d.oldLotNo} → ${d.newLotNo} ${d.quantity} ชิ้น • Journal ${d.documentNo}`,
+      );
+    } catch (err: any) {
+      const m = String(err?.message ?? err ?? "Error");
+      console.error("saveEditModal failed:", err);
+      pushToast("err", `บันทึกไม่สำเร็จ: ${m.slice(0, 120)}`);
     }
-
-    const journalId = uid("J");
-    const journal: ItemJournalEntry = {
-      id: journalId,
-      documentNo: d.documentNo.trim(),
-      itemNo: d.itemNo,
-      description: d.description,
-      locationCode: JOURNAL_LOCATION, // always 60008-EXP for the journal
-      quantity: d.quantity,
-      uom: d.uom,
-      oldLotNo: d.oldLotNo,
-      oldExpirationDate: d.oldExpirationDate,
-      newLotNo: d.newLotNo.trim(),
-      newExpirationDate: d.newExpirationDate || undefined,
-      createdAt: new Date().toISOString(),
-      exported: false,
-      cartonId: c.id,
-    };
-    await saveJournalEntry(journal);
-
-    const line: TransferLine = {
-      itemNo: d.itemNo,
-      description: d.description,
-      quantity: d.quantity,
-      lotNo: d.oldLotNo, // TO moves with the OLD lot — Journal renames it at destination
-      expirationDate: d.oldExpirationDate,
-      uom: d.uom,
-      alreadyExp: d.sourceLocation === LOC_EXP,
-      journalEntryId: journalId,
-      newLotNo: d.newLotNo.trim(),
-      newExpirationDate: d.newExpirationDate || undefined,
-    };
-    const lines = [...c.lines, line];
-    const next = { ...c, lines };
-    await saveTransfer(next);
-    setCarton(next);
-    setEditDraft(null);
-    await refreshStockOf(d.itemNo);
-    pushToast(
-      "ok",
-      `แก้ LOT ${d.oldLotNo} → ${d.newLotNo} ${d.quantity} ชิ้น • Journal ${d.documentNo}`,
-    );
   }
 
   async function removeLine(idx: number) {

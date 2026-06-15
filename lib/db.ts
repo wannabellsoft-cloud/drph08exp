@@ -281,7 +281,18 @@ export async function nextJournalDocNo(): Promise<string> {
 
 export async function saveJournalEntry(e: ItemJournalEntry) {
   const { error } = await sb().from(T_JOURNAL).upsert(e);
-  if (error) throw error;
+  if (error) {
+    // Defensive: if the journal table was created by an older version of
+    // the schema, cartonId may be missing. Drop the field and retry so
+    // the user can keep working without re-running migrations.
+    if (/cartonId/i.test(error.message) || error.code === "PGRST204") {
+      const { cartonId, ...rest } = e;
+      const r2 = await sb().from(T_JOURNAL).upsert(rest);
+      if (r2.error) throw new Error(r2.error.message);
+      return;
+    }
+    throw new Error(error.message);
+  }
 }
 
 export async function listJournalEntries(): Promise<ItemJournalEntry[]> {
@@ -329,7 +340,10 @@ export async function deletePendingJournalsForCarton(cartonId: string) {
     .delete()
     .eq("cartonId", cartonId)
     .eq("exported", false);
-  if (error) throw error;
+  // If the cartonId column doesn't exist (legacy schema), skip silently.
+  if (error && !/cartonId/i.test(error.message) && error.code !== "PGRST204") {
+    throw error;
+  }
 }
 
 export async function countJournal(): Promise<number> {
