@@ -26,8 +26,11 @@ import {
   LockIcon,
   TrashIcon,
   ArrowRightIcon,
+  ArrowDownIcon,
   CheckIcon,
   EditIcon,
+  MinusIcon,
+  SparkleIcon,
 } from "./Icons";
 
 const LOC_ON_HAND = "60008";
@@ -838,105 +841,203 @@ function EditLotModal({
   onCancel: () => void;
   onSave: () => void;
 }) {
+  const lotChanged = d.newLotNo.trim() !== d.oldLotNo;
+  const expChanged = (d.newExpirationDate || "") !== (d.oldExpirationDate || "");
+
   return (
-    <div className="fixed inset-0 z-30 flex items-center justify-center bg-slate-900/40 backdrop-blur-sm no-print">
-      <div className="bg-white rounded-2xl shadow-2xl border border-slate-200 max-w-lg w-full mx-4">
-        <div className="px-5 pt-5 pb-3 border-b border-slate-100">
-          <div className="text-[10px] uppercase tracking-widest text-indigo-600">Item Journal</div>
-          <h2 className="font-bold text-slate-900 text-lg">แก้ LOT / EXP</h2>
-          <p className="text-xs text-slate-500 mt-0.5">
-            สร้าง Journal Adjmt. + ใส่ลงลังพร้อมกัน (ยอด Remain จะถูกหักออกทันที)
-          </p>
+    <div className="fixed inset-0 z-30 flex items-center justify-center bg-slate-900/50 backdrop-blur-sm no-print p-3 animate-backdrop-in">
+      <div className="bg-white rounded-2xl shadow-2xl max-w-md w-full overflow-hidden flex flex-col max-h-[92vh] animate-modal-in">
+        {/* Gradient header */}
+        <div className="bg-gradient-to-br from-indigo-500 via-indigo-600 to-violet-600 text-white px-5 py-4 relative overflow-hidden">
+          <div className="absolute -right-4 -top-4 w-24 h-24 rounded-full bg-white/10 blur-2xl" />
+          <div className="absolute -left-8 -bottom-8 w-32 h-32 rounded-full bg-white/5 blur-2xl" />
+          <div className="relative flex items-center gap-3">
+            <div className="w-11 h-11 rounded-xl bg-white/15 backdrop-blur grid place-items-center shadow-inner">
+              <EditIcon className="w-5 h-5" />
+            </div>
+            <div className="flex-1 min-w-0">
+              <div className="text-[10px] uppercase tracking-[0.18em] opacity-80 font-semibold">
+                Item Journal
+              </div>
+              <h2 className="font-extrabold text-xl leading-tight">แก้ LOT / EXP</h2>
+            </div>
+          </div>
         </div>
-        <div className="p-5 space-y-3 text-sm">
-          <Field label="Document No.">
+
+        {/* Scrollable body */}
+        <div className="overflow-y-auto scroll-thin px-5 py-4 space-y-4 text-sm flex-1">
+          {/* Item card */}
+          <div className="bg-slate-50 rounded-xl px-3 py-2.5 border border-slate-200/70">
+            <div className="flex items-center justify-between gap-2">
+              <div className="min-w-0 flex-1">
+                <div className="text-[10px] uppercase tracking-wide font-semibold text-slate-500">
+                  สินค้า
+                </div>
+                <div className="font-mono text-sm font-semibold text-slate-900 truncate">
+                  {d.itemNo}
+                </div>
+                {d.description && (
+                  <div className="text-xs text-slate-600 mt-0.5 truncate">{d.description}</div>
+                )}
+              </div>
+              <div className="text-right shrink-0">
+                <div className="text-[9px] uppercase tracking-wide text-slate-400">Location</div>
+                <div className="flex items-center gap-1 mt-0.5">
+                  <span className="px-1.5 py-0.5 bg-slate-200 text-slate-700 text-[10px] rounded font-mono">
+                    {d.sourceLocation}
+                  </span>
+                  <ArrowRightIcon className="w-3 h-3 text-slate-400" />
+                  <span className="px-1.5 py-0.5 bg-indigo-100 text-indigo-700 text-[10px] rounded font-mono font-semibold">
+                    60008-EXP
+                  </span>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          {/* Document No. */}
+          <label className="block">
+            <div className="text-[10px] uppercase tracking-wide font-semibold text-slate-500 mb-1">
+              Document No.
+            </div>
             <input
               value={d.documentNo}
               onChange={(e) => onChange({ ...d, documentNo: e.target.value })}
-              className="w-full px-3 py-1.5 font-mono text-sm border border-slate-300 rounded-lg focus:outline-none focus:border-indigo-400 focus:ring-2 focus:ring-indigo-100"
+              className="w-full px-3 py-2 font-mono text-sm border border-slate-300 rounded-lg focus:outline-none focus:border-indigo-400 focus:ring-2 focus:ring-indigo-100"
             />
-          </Field>
+          </label>
 
-          <div className="grid grid-cols-2 gap-3">
-            <Field label="Item No.">
-              <div className="px-3 py-1.5 bg-slate-100 rounded-lg font-mono text-slate-700">
-                {d.itemNo}
-              </div>
-            </Field>
-            <Field label="Source / Journal Location">
-              <div className="px-3 py-1.5 bg-slate-100 rounded-lg font-mono text-slate-700 text-xs">
-                {d.sourceLocation}{" "}
-                <span className="text-slate-400">→ Journal:</span>{" "}
-                <span className="text-indigo-700 font-semibold">60008-EXP</span>
-              </div>
-            </Field>
-          </div>
-
-          {d.description && <div className="text-xs text-slate-500 truncate">{d.description}</div>}
-
-          <div className="bg-rose-50/50 border border-rose-200 rounded-xl p-3">
-            <div className="text-[10px] uppercase font-semibold text-rose-700 mb-2">
-              Negative Adjmt. (LOT เดิม)
+          {/* OLD card */}
+          <div className="relative bg-gradient-to-br from-rose-50 to-rose-100/40 border border-rose-200 rounded-xl px-3 pt-4 pb-3">
+            <div className="absolute -top-2.5 left-3 px-2 py-0.5 bg-rose-500 text-white text-[9px] font-bold tracking-widest rounded uppercase shadow-sm">
+              Negative Adjmt.
             </div>
             <div className="grid grid-cols-2 gap-3">
-              <Field label="Old LOT">
-                <div className="px-3 py-1.5 bg-white rounded-lg font-mono">{d.oldLotNo}</div>
-              </Field>
-              <Field label="Old EXP">
-                <div className="px-3 py-1.5 bg-white rounded-lg text-slate-700">
+              <div>
+                <div className="text-[9px] uppercase tracking-wide font-semibold text-rose-700/80 mb-1">
+                  LOT เดิม
+                </div>
+                <div className="px-3 py-2 bg-white border border-rose-200 rounded-lg font-mono text-rose-900 font-semibold text-sm">
+                  {d.oldLotNo}
+                </div>
+              </div>
+              <div>
+                <div className="text-[9px] uppercase tracking-wide font-semibold text-rose-700/80 mb-1">
+                  EXP เดิม
+                </div>
+                <div className="px-3 py-2 bg-white border border-rose-200 rounded-lg text-rose-900 font-medium text-sm">
                   {d.oldExpirationDate || "—"}
                 </div>
-              </Field>
+              </div>
             </div>
           </div>
 
-          <div className="bg-emerald-50/50 border border-emerald-200 rounded-xl p-3">
-            <div className="text-[10px] uppercase font-semibold text-emerald-700 mb-2">
-              Positive Adjmt. (LOT ใหม่)
+          {/* Animated arrows */}
+          <div className="flex justify-center -my-2">
+            <div className="flex flex-col items-center leading-none">
+              <ArrowDownIcon className="w-5 h-5 text-indigo-400 animate-arrow-1" />
+              <ArrowDownIcon className="w-5 h-5 -mt-2 text-indigo-500 animate-arrow-2" />
+              <ArrowDownIcon className="w-5 h-5 -mt-2 text-indigo-600 animate-arrow-3" />
+            </div>
+          </div>
+
+          {/* NEW card */}
+          <div className="relative bg-gradient-to-br from-emerald-50 to-emerald-100/40 border border-emerald-200 rounded-xl px-3 pt-4 pb-3">
+            <div className="absolute -top-2.5 left-3 px-2 py-0.5 bg-emerald-500 text-white text-[9px] font-bold tracking-widest rounded uppercase shadow-sm flex items-center gap-1">
+              Positive Adjmt.
+              {(lotChanged || expChanged) && <SparkleIcon className="w-2.5 h-2.5" />}
             </div>
             <div className="grid grid-cols-2 gap-3">
-              <Field label="New LOT">
+              <div>
+                <div className="text-[9px] uppercase tracking-wide font-semibold text-emerald-700/80 mb-1">
+                  LOT ใหม่
+                </div>
                 <input
                   value={d.newLotNo}
                   onChange={(e) => onChange({ ...d, newLotNo: e.target.value })}
                   placeholder="LOT ใหม่"
-                  className="w-full px-3 py-1.5 font-mono border border-slate-300 rounded-lg focus:outline-none focus:border-emerald-400 focus:ring-2 focus:ring-emerald-100"
+                  className={`w-full px-3 py-2 font-mono font-semibold text-sm bg-white border rounded-lg focus:outline-none focus:ring-2 transition ${
+                    lotChanged
+                      ? "border-emerald-400 text-emerald-900 ring-2 ring-emerald-100 focus:border-emerald-500 focus:ring-emerald-200"
+                      : "border-emerald-200 text-slate-700 focus:border-emerald-400 focus:ring-emerald-100"
+                  }`}
                 />
-              </Field>
-              <Field label="New EXP">
+              </div>
+              <div>
+                <div className="text-[9px] uppercase tracking-wide font-semibold text-emerald-700/80 mb-1">
+                  EXP ใหม่
+                </div>
                 <input
                   type="date"
                   value={d.newExpirationDate}
                   onChange={(e) => onChange({ ...d, newExpirationDate: e.target.value })}
-                  className="w-full px-3 py-1.5 border border-slate-300 rounded-lg focus:outline-none focus:border-emerald-400 focus:ring-2 focus:ring-emerald-100"
+                  className={`w-full px-3 py-2 text-sm bg-white border rounded-lg focus:outline-none focus:ring-2 transition ${
+                    expChanged
+                      ? "border-emerald-400 text-emerald-900 ring-2 ring-emerald-100 focus:border-emerald-500 focus:ring-emerald-200"
+                      : "border-emerald-200 text-slate-700 focus:border-emerald-400 focus:ring-emerald-100"
+                  }`}
                 />
-              </Field>
+              </div>
             </div>
           </div>
 
-          <Field label={`Quantity (สูงสุด ${d.maxQty})`}>
-            <input
-              type="number"
-              min={1}
-              max={d.maxQty}
-              value={d.quantity}
-              onChange={(e) => onChange({ ...d, quantity: parseInt(e.target.value || "0", 10) })}
-              className="w-32 px-3 py-1.5 text-right font-semibold border border-slate-300 rounded-lg focus:outline-none focus:border-indigo-400 focus:ring-2 focus:ring-indigo-100"
-            />
-          </Field>
+          {/* Quantity stepper */}
+          <div className="bg-gradient-to-br from-slate-50 to-white border border-slate-200 rounded-xl px-3 py-3">
+            <div className="flex items-baseline justify-between mb-2">
+              <div className="text-[10px] uppercase tracking-wide font-semibold text-slate-500">
+                Quantity
+              </div>
+              <div className="text-[10px] text-slate-400">
+                สูงสุด <span className="font-bold text-slate-600">{d.maxQty}</span> ชิ้น
+              </div>
+            </div>
+            <div className="flex items-center justify-center gap-3">
+              <StepBtn
+                onClick={() =>
+                  onChange({ ...d, quantity: Math.max(1, (d.quantity || 0) - 1) })
+                }
+                disabled={d.quantity <= 1}
+              >
+                <MinusIcon className="w-5 h-5" />
+              </StepBtn>
+              <input
+                type="number"
+                min={1}
+                max={d.maxQty}
+                value={d.quantity}
+                onChange={(e) =>
+                  onChange({
+                    ...d,
+                    quantity: Math.min(d.maxQty, Math.max(0, parseInt(e.target.value || "0", 10))),
+                  })
+                }
+                className="w-24 text-center text-3xl font-extrabold border-2 border-slate-200 rounded-xl py-1.5 focus:outline-none focus:border-indigo-400 focus:ring-2 focus:ring-indigo-100"
+              />
+              <StepBtn
+                onClick={() =>
+                  onChange({ ...d, quantity: Math.min(d.maxQty, (d.quantity || 0) + 1) })
+                }
+                disabled={d.quantity >= d.maxQty}
+              >
+                <PlusIcon className="w-5 h-5" />
+              </StepBtn>
+            </div>
+          </div>
         </div>
-        <div className="px-5 py-3 bg-slate-50 border-t border-slate-200 rounded-b-2xl flex justify-end gap-2">
+
+        {/* Footer */}
+        <div className="px-5 py-3 bg-slate-50 border-t border-slate-200 flex justify-between items-center gap-2 shrink-0">
           <button
             onClick={onCancel}
-            className="px-4 py-1.5 text-sm text-slate-600 hover:text-slate-900"
+            className="px-4 py-2 text-sm text-slate-600 hover:text-slate-900 hover:bg-slate-100 rounded-lg transition"
           >
             ยกเลิก
           </button>
           <button
             onClick={onSave}
-            className="flex items-center gap-1 px-4 py-1.5 bg-indigo-600 text-white text-sm rounded-lg hover:bg-indigo-700 shadow-sm"
+            className="flex items-center gap-1.5 px-5 py-2 bg-gradient-to-br from-indigo-500 to-indigo-700 text-white text-sm font-semibold rounded-lg hover:from-indigo-600 hover:to-indigo-800 active:scale-95 shadow-md transition"
           >
-            <CheckIcon /> Confirm
+            <CheckIcon className="w-4 h-4" /> Confirm
           </button>
         </div>
       </div>
@@ -944,13 +1045,23 @@ function EditLotModal({
   );
 }
 
-function Field({ label, children }: { label: string; children: React.ReactNode }) {
+function StepBtn({
+  children,
+  onClick,
+  disabled,
+}: {
+  children: React.ReactNode;
+  onClick: () => void;
+  disabled?: boolean;
+}) {
   return (
-    <label className="block">
-      <div className="text-[10px] uppercase tracking-wide font-semibold text-slate-500 mb-0.5">
-        {label}
-      </div>
+    <button
+      type="button"
+      onClick={onClick}
+      disabled={disabled}
+      className="w-11 h-11 rounded-full bg-white border-2 border-slate-200 text-slate-700 hover:border-indigo-400 hover:text-indigo-600 active:scale-90 disabled:opacity-30 disabled:cursor-not-allowed disabled:hover:border-slate-200 disabled:hover:text-slate-700 grid place-items-center transition shadow-sm"
+    >
       {children}
-    </label>
+    </button>
   );
 }

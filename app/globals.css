@@ -50,16 +50,18 @@ input[type="number"] {
 }
 .animate-fadeUp { animation: fadeUp 200ms ease-out; }
 
-/* Camera scan line that sweeps up and down the scan box */
+/* Camera scan line — sweeps the full height of the scan box.
+   Animating `top` (parent-relative) instead of translateY (self-relative)
+   so the line actually traverses the box rather than nudging 3px. */
 @keyframes scanSweep {
-  0%   { transform: translateY(0%); opacity: 0.3; }
+  0%   { top: 0; opacity: 0.4; }
   10%  { opacity: 1; }
-  50%  { transform: translateY(100%); opacity: 1; }
+  50%  { top: calc(100% - 3px); opacity: 1; }
   90%  { opacity: 1; }
-  100% { transform: translateY(0%); opacity: 0.3; }
+  100% { top: 0; opacity: 0.4; }
 }
 .animate-scan-sweep {
-  animation: scanSweep 1.8s ease-in-out infinite;
+  animation: scanSweep 1.6s ease-in-out infinite;
 }
 
 /* Subtle corner pulse */
@@ -70,3 +72,35 @@ input[type="number"] {
 .animate-corner-pulse {
   animation: cornerPulse 1.8s ease-in-out infinite;
 }
+
+/* Modal entrance */
+@keyframes backdropIn {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+.animate-backdrop-in { animation: backdropIn 180ms ease-out; }
+
+@keyframes modalIn {
+  from { opacity: 0; transform: scale(0.96) translateY(10px); }
+  to   { opacity: 1; transform: scale(1) translateY(0); }
+}
+.animate-modal-in {
+  animation: modalIn 260ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+/* Three bouncing arrows for OLD → NEW transition */
+@keyframes arrowBounce {
+  0%, 100% { opacity: 0.25; transform: translateY(-2px); }
+  50%      { opacity: 1;    transform: translateY(2px); }
+}
+.animate-arrow-1 { animation: arrowBounce 1.4s ease-in-out infinite; }
+.animate-arrow-2 { animation: arrowBounce 1.4s ease-in-out infinite; animation-delay: 0.18s; }
+.animate-arrow-3 { animation: arrowBounce 1.4s ease-in-out infinite; animation-delay: 0.36s; }
+
+/* Stepper button press */
+@keyframes pressPop {
+  0%   { transform: scale(1); }
+  50%  { transform: scale(0.88); }
+  100% { transform: scale(1); }
+}
+.animate-press-pop { animation: pressPop 180ms ease-out; }
