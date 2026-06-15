@@ -864,137 +864,134 @@ function EditLotModal({
           </div>
         </div>
 
-        {/* Scrollable body */}
-        <div className="overflow-y-auto scroll-thin px-4 md:px-5 py-3.5 space-y-3 text-sm flex-1">
-          {/* Item card — full width */}
-          <div className="bg-slate-50 rounded-xl px-3 py-2.5 border border-slate-200/70">
+        {/* Body — no scroll on mobile or desktop in the common case */}
+        <div className="overflow-y-auto scroll-thin px-3 md:px-5 py-3 md:py-3.5 space-y-2.5 md:space-y-3 text-sm flex-1">
+          {/* Item card — compact on mobile */}
+          <div className="bg-slate-50 rounded-xl px-3 py-2 md:py-2.5 border border-slate-200/70">
             <div className="flex items-center justify-between gap-2">
               <div className="min-w-0 flex-1">
-                <div className="text-[10px] uppercase tracking-wide font-semibold text-slate-500">
-                  สินค้า
-                </div>
-                <div className="font-mono text-sm font-semibold text-slate-900 truncate">
+                <div className="font-mono text-xs md:text-sm font-semibold text-slate-900 truncate">
                   {d.itemNo}
                 </div>
                 {d.description && (
-                  <div className="text-xs text-slate-600 mt-0.5 truncate">{d.description}</div>
+                  <div className="text-[11px] text-slate-600 truncate">{d.description}</div>
                 )}
               </div>
-              <div className="text-right shrink-0">
-                <div className="text-[9px] uppercase tracking-wide text-slate-400">Location</div>
-                <div className="flex items-center gap-1 mt-0.5">
-                  <span className="px-1.5 py-0.5 bg-slate-200 text-slate-700 text-[10px] rounded font-mono">
-                    {d.sourceLocation}
-                  </span>
-                  <ArrowRightIcon className="w-3 h-3 text-slate-400" />
-                  <span className="px-1.5 py-0.5 bg-indigo-100 text-indigo-700 text-[10px] rounded font-mono font-semibold">
-                    60008-EXP
-                  </span>
-                </div>
+              <div className="flex items-center gap-1 shrink-0">
+                <span className="px-1.5 py-0.5 bg-slate-200 text-slate-700 text-[10px] rounded font-mono">
+                  {d.sourceLocation}
+                </span>
+                <ArrowRightIcon className="w-3 h-3 text-slate-400" />
+                <span className="px-1.5 py-0.5 bg-indigo-100 text-indigo-700 text-[10px] rounded font-mono font-semibold">
+                  60008-EXP
+                </span>
               </div>
             </div>
           </div>
 
-          {/* Two-column layout — Old/New flow on the left, Quantity on the right */}
+          {/* Doc No. — compact on mobile */}
+          <label className="block">
+            <div className="text-[10px] uppercase tracking-wide font-semibold text-slate-500 mb-1">
+              Document No.
+            </div>
+            <input
+              value={d.documentNo}
+              onChange={(e) => onChange({ ...d, documentNo: e.target.value })}
+              className="w-full px-3 py-1.5 md:py-2 font-mono text-xs md:text-sm border border-slate-300 rounded-lg focus:outline-none focus:border-indigo-400 focus:ring-2 focus:ring-indigo-100"
+            />
+          </label>
+
+          {/* Two-column layout on desktop only */}
           <div className="grid grid-cols-1 md:grid-cols-5 gap-3">
-            {/* LEFT: Doc No + OLD → NEW */}
-            <div className="md:col-span-3 space-y-3">
-              {/* Document No. */}
-              <label className="block">
-                <div className="text-[10px] uppercase tracking-wide font-semibold text-slate-500 mb-1">
-                  Document No.
-                </div>
-                <input
-                  value={d.documentNo}
-                  onChange={(e) => onChange({ ...d, documentNo: e.target.value })}
-                  className="w-full px-3 py-2 font-mono text-sm border border-slate-300 rounded-lg focus:outline-none focus:border-indigo-400 focus:ring-2 focus:ring-indigo-100"
-                />
-              </label>
-
-              {/* OLD card */}
-              <div className="relative bg-gradient-to-br from-rose-50 to-rose-100/40 border border-rose-200 rounded-xl px-3 pt-4 pb-3">
-                <div className="absolute -top-2.5 left-3 px-2 py-0.5 bg-rose-500 text-white text-[9px] font-bold tracking-widest rounded uppercase shadow-sm">
-                  Negative Adjmt.
-                </div>
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
-                  <div className="min-w-0">
-                    <div className="text-[9px] uppercase tracking-wide font-semibold text-rose-700/80 mb-1">
-                      LOT เดิม
-                    </div>
-                    <div className="px-2.5 py-2 bg-white border border-rose-200 rounded-lg font-mono text-rose-900 font-semibold text-sm truncate">
-                      {d.oldLotNo}
-                    </div>
+            <div className="md:col-span-3">
+              {/* OLD/NEW: side-by-side on mobile, stacked on desktop */}
+              <div className="grid grid-cols-2 md:grid-cols-1 gap-2 md:gap-2.5">
+                {/* OLD card */}
+                <div className="relative bg-gradient-to-br from-rose-50 to-rose-100/40 border border-rose-200 rounded-xl px-2.5 md:px-3 pt-3.5 md:pt-4 pb-2.5 md:pb-3 min-w-0">
+                  <div className="absolute -top-2.5 left-2.5 md:left-3 px-1.5 md:px-2 py-0.5 bg-rose-500 text-white text-[9px] font-bold tracking-widest rounded uppercase shadow-sm">
+                    Negative
                   </div>
-                  <div className="min-w-0">
-                    <div className="text-[9px] uppercase tracking-wide font-semibold text-rose-700/80 mb-1">
-                      EXP เดิม
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-2 md:gap-2.5">
+                    <div className="min-w-0">
+                      <div className="text-[9px] uppercase tracking-wide font-semibold text-rose-700/80 mb-1">
+                        LOT เดิม
+                      </div>
+                      <div className="px-2 md:px-2.5 py-1.5 md:py-2 bg-white border border-rose-200 rounded-lg font-mono text-rose-900 font-semibold text-xs md:text-sm truncate">
+                        {d.oldLotNo}
+                      </div>
                     </div>
-                    <div className="px-2.5 py-2 bg-white border border-rose-200 rounded-lg text-rose-900 font-medium text-sm truncate">
-                      {d.oldExpirationDate || "—"}
+                    <div className="min-w-0">
+                      <div className="text-[9px] uppercase tracking-wide font-semibold text-rose-700/80 mb-1">
+                        EXP เดิม
+                      </div>
+                      <div className="px-2 md:px-2.5 py-1.5 md:py-2 bg-white border border-rose-200 rounded-lg text-rose-900 font-medium text-xs md:text-sm truncate">
+                        {d.oldExpirationDate || "—"}
+                      </div>
                     </div>
                   </div>
                 </div>
-              </div>
 
-              {/* Animated arrows */}
-              <div className="flex justify-center -my-1">
-                <div className="flex flex-col items-center leading-none">
-                  <ArrowDownIcon className="w-4 h-4 text-indigo-400 animate-arrow-1" />
-                  <ArrowDownIcon className="w-4 h-4 -mt-1.5 text-indigo-500 animate-arrow-2" />
-                  <ArrowDownIcon className="w-4 h-4 -mt-1.5 text-indigo-600 animate-arrow-3" />
-                </div>
-              </div>
-
-              {/* NEW card */}
-              <div className="relative bg-gradient-to-br from-emerald-50 to-emerald-100/40 border border-emerald-200 rounded-xl px-3 pt-4 pb-3">
-                <div className="absolute -top-2.5 left-3 px-2 py-0.5 bg-emerald-500 text-white text-[9px] font-bold tracking-widest rounded uppercase shadow-sm flex items-center gap-1">
-                  Positive Adjmt.
-                  {(lotChanged || expChanged) && <SparkleIcon className="w-2.5 h-2.5" />}
-                </div>
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
-                  <div className="min-w-0">
-                    <div className="text-[9px] uppercase tracking-wide font-semibold text-emerald-700/80 mb-1">
-                      LOT ใหม่
-                    </div>
-                    <input
-                      value={d.newLotNo}
-                      onChange={(e) => onChange({ ...d, newLotNo: e.target.value })}
-                      placeholder="LOT ใหม่"
-                      className={`w-full min-w-0 px-2.5 py-2 font-mono font-semibold text-sm bg-white border rounded-lg focus:outline-none focus:ring-2 transition ${
-                        lotChanged
-                          ? "border-emerald-400 text-emerald-900 ring-2 ring-emerald-100 focus:border-emerald-500 focus:ring-emerald-200"
-                          : "border-emerald-200 text-slate-700 focus:border-emerald-400 focus:ring-emerald-100"
-                      }`}
-                    />
+                {/* Animated arrows — desktop only */}
+                <div className="hidden md:flex justify-center -my-1">
+                  <div className="flex flex-col items-center leading-none">
+                    <ArrowDownIcon className="w-4 h-4 text-indigo-400 animate-arrow-1" />
+                    <ArrowDownIcon className="w-4 h-4 -mt-1.5 text-indigo-500 animate-arrow-2" />
+                    <ArrowDownIcon className="w-4 h-4 -mt-1.5 text-indigo-600 animate-arrow-3" />
                   </div>
-                  <div className="min-w-0">
-                    <div className="text-[9px] uppercase tracking-wide font-semibold text-emerald-700/80 mb-1">
-                      EXP ใหม่
+                </div>
+
+                {/* NEW card */}
+                <div className="relative bg-gradient-to-br from-emerald-50 to-emerald-100/40 border border-emerald-200 rounded-xl px-2.5 md:px-3 pt-3.5 md:pt-4 pb-2.5 md:pb-3 min-w-0">
+                  <div className="absolute -top-2.5 left-2.5 md:left-3 px-1.5 md:px-2 py-0.5 bg-emerald-500 text-white text-[9px] font-bold tracking-widest rounded uppercase shadow-sm flex items-center gap-1">
+                    Positive
+                    {(lotChanged || expChanged) && <SparkleIcon className="w-2.5 h-2.5" />}
+                  </div>
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-2 md:gap-2.5">
+                    <div className="min-w-0">
+                      <div className="text-[9px] uppercase tracking-wide font-semibold text-emerald-700/80 mb-1">
+                        LOT ใหม่
+                      </div>
+                      <input
+                        value={d.newLotNo}
+                        onChange={(e) => onChange({ ...d, newLotNo: e.target.value })}
+                        placeholder="LOT ใหม่"
+                        className={`w-full min-w-0 px-2 md:px-2.5 py-1.5 md:py-2 font-mono font-semibold text-xs md:text-sm bg-white border rounded-lg focus:outline-none focus:ring-2 transition ${
+                          lotChanged
+                            ? "border-emerald-400 text-emerald-900 ring-2 ring-emerald-100 focus:border-emerald-500 focus:ring-emerald-200"
+                            : "border-emerald-200 text-slate-700 focus:border-emerald-400 focus:ring-emerald-100"
+                        }`}
+                      />
                     </div>
-                    <input
-                      type="date"
-                      value={d.newExpirationDate}
-                      onChange={(e) => onChange({ ...d, newExpirationDate: e.target.value })}
-                      className={`w-full min-w-0 px-2 py-2 text-sm bg-white border rounded-lg focus:outline-none focus:ring-2 transition ${
-                        expChanged
-                          ? "border-emerald-400 text-emerald-900 ring-2 ring-emerald-100 focus:border-emerald-500 focus:ring-emerald-200"
-                          : "border-emerald-200 text-slate-700 focus:border-emerald-400 focus:ring-emerald-100"
-                      }`}
-                    />
+                    <div className="min-w-0">
+                      <div className="text-[9px] uppercase tracking-wide font-semibold text-emerald-700/80 mb-1">
+                        EXP ใหม่
+                      </div>
+                      <input
+                        type="date"
+                        value={d.newExpirationDate}
+                        onChange={(e) => onChange({ ...d, newExpirationDate: e.target.value })}
+                        style={{ textAlign: "left" }}
+                        className={`w-full min-w-0 px-1.5 md:px-2 py-1.5 md:py-2 text-[11px] md:text-sm bg-white border rounded-lg focus:outline-none focus:ring-2 transition ${
+                          expChanged
+                            ? "border-emerald-400 text-emerald-900 ring-2 ring-emerald-100 focus:border-emerald-500 focus:ring-emerald-200"
+                            : "border-emerald-200 text-slate-700 focus:border-emerald-400 focus:ring-emerald-100"
+                        }`}
+                      />
+                    </div>
                   </div>
                 </div>
               </div>
             </div>
 
-            {/* RIGHT: Quantity stepper */}
+            {/* RIGHT: Quantity */}
             <div className="md:col-span-2">
-              <div className="bg-gradient-to-br from-indigo-50 via-white to-white border border-indigo-200 rounded-xl px-4 py-4 md:h-full flex flex-col justify-center">
-                <div className="flex items-baseline justify-between mb-3">
+              <div className="bg-gradient-to-br from-indigo-50 via-white to-white border border-indigo-200 rounded-xl px-3 md:px-4 py-2.5 md:py-4 md:h-full flex flex-col justify-center">
+                <div className="flex items-baseline justify-between mb-2 md:mb-3">
                   <div className="text-[10px] uppercase tracking-wide font-semibold text-indigo-700">
                     Quantity
                   </div>
                   <div className="text-[10px] text-slate-500">
-                    สูงสุด <span className="font-bold text-slate-700">{d.maxQty}</span> ชิ้น
+                    สูงสุด <span className="font-bold text-slate-700">{d.maxQty}</span>
                   </div>
                 </div>
                 <div className="flex items-center justify-center gap-2">
@@ -1020,7 +1017,7 @@ function EditLotModal({
                         ),
                       })
                     }
-                    className="w-20 text-center text-3xl font-extrabold border-2 border-indigo-200 rounded-xl py-1.5 focus:outline-none focus:border-indigo-400 focus:ring-2 focus:ring-indigo-100 bg-white"
+                    className="w-16 md:w-20 text-center text-2xl md:text-3xl font-extrabold border-2 border-indigo-200 rounded-xl py-1 md:py-1.5 focus:outline-none focus:border-indigo-400 focus:ring-2 focus:ring-indigo-100 bg-white"
                   />
                   <StepBtn
                     onClick={() =>
@@ -1031,7 +1028,7 @@ function EditLotModal({
                     <PlusIcon className="w-5 h-5" />
                   </StepBtn>
                 </div>
-                <div className="hidden md:flex justify-center gap-1.5 mt-3">
+                <div className="flex justify-center gap-1.5 mt-2 md:mt-3">
                   {[
                     { label: "min", v: 1 },
                     { label: "½", v: Math.max(1, Math.floor(d.maxQty / 2)) },
@@ -1041,9 +1038,9 @@ function EditLotModal({
                       key={q.label}
                       type="button"
                       onClick={() => onChange({ ...d, quantity: q.v })}
-                      className="px-2 py-0.5 text-[10px] font-semibold bg-white border border-indigo-200 text-indigo-700 rounded-md hover:bg-indigo-50 transition"
+                      className="px-2 py-0.5 text-[10px] font-semibold bg-white border border-indigo-200 text-indigo-700 rounded-md hover:bg-indigo-50 active:scale-95 transition"
                     >
-                      {q.label} ({q.v})
+                      {q.label} <span className="text-slate-400">({q.v})</span>
                     </button>
                   ))}
                 </div>
