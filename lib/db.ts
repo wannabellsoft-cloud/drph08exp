@@ -1,14 +1,18 @@
 "use client";
 import { sb, isConfigured } from "./supabase";
-import type { Item, LedgerEntry, Transfer, StockSummary } from "./types";
+import type { Item, LedgerEntry, Transfer, ItemJournalEntry, StockSummary } from "./types";
 
 export { isConfigured };
 export const EXTERNAL_DOC_PREFIX = "TO08EXP-";
 export const EXTERNAL_DOC_PAD = 4;
+export const JOURNAL_DOC_PREFIX = "LOT60008-";
+export const JOURNAL_DOC_PAD = 3;
+export const JOURNAL_LOCATION = "60008-EXP";
 
 const T_ITEMS = "items";
 const T_LEDGER = "ledger";
 const T_TRANSFERS = "transfers";
+const T_JOURNAL = "journal";
 
 // Wrap a network-bound call with retry + clearer error context.
 // "TypeError: Failed to fetch" usually means: payload too big, network blip,
@@ -254,6 +258,73 @@ export async function deleteTransferAndRevert(id: string) {
   if (error) throw error;
 }
 
+// ============ ITEM JOURNAL ============
+export async function nextJournalDocNo(): Promise<string> {
+  const now = new Date();
+  const yy = String(now.getFullYear() % 100).padStart(2, "0");
+  const mm = String(now.getMonth() + 1).padStart(2, "0");
+  const prefix = `${JOURNAL_DOC_PREFIX}${yy}${mm}`;
+  const { data, error } = await sb().from(T_JOURNAL).select("documentNo");
+  if (error) throw error;
+  let max = 0;
+  for (const r of data ?? []) {
+    const v = ((r as any).documentNo ?? "").toString();
+    if (!v.startsWith(prefix)) continue;
+    const n = parseInt(v.slice(prefix.length), 10);
+    if (Number.isFinite(n) && n > max) max = n;
+  }
+  return `${prefix}${String(max + 1).padStart(JOURNAL_DOC_PAD, "0")}`;
+}
+
+export async function saveJournalEntry(e: ItemJournalEntry) {
+  const { error } = await sb().from(T_JOURNAL).upsert(e);
+  if (error) throw error;
+}
+
+export async function listJournalEntries(): Promise<ItemJournalEntry[]> {
+  const { data, error } = await sb()
+    .from(T_JOURNAL)
+    .select("*")
+    .order("createdAt", { ascending: false });
+  if (error) throw error;
+  return (data ?? []) as ItemJournalEntry[];
+}
+
+export async function getJournalEntry(id: string): Promise<ItemJournalEntry | undefined> {
+  const { data, error } = await sb().from(T_JOURNAL).select("*").eq("id", id).maybeSingle();
+  if (error) throw error;
+  return (data ?? undefined) as ItemJournalEntry | undefined;
+}
+
+export async function deleteJournalEntry(id: string) {
+  const { error } = await sb().from(T_JOURNAL).delete().eq("id", id);
+  if (error) throw error;
+}
+
+export async function countJournal(): Promise<number> {
+  const { count, error } = await sb().from(T_JOURNAL).select("*", { count: "exact", head: true });
+  if (error) throw error;
+  return count ?? 0;
+}
+
+export async function markJournalExported(ids: string[]) {
+  if (!ids.length) return;
+  const postingDate = new Date().toISOString().slice(0, 10);
+  const { error } = await sb()
+    .from(T_JOURNAL)
+    .update({ exported: true, exportedAt: new Date().toISOString(), postingDate })
+    .in("id", ids);
+  if (error) throw error;
+}
+
+export async function unexportJournal(id: string) {
+  const { error } = await sb()
+    .from(T_JOURNAL)
+    .update({ exported: false, exportedAt: null, postingDate: null })
+    .eq("id", id);
+  if (error) throw error;
+}
+
 // ============ APPLIED RECONCILE ============
 export async function markAppliedFromLedger(): Promise<{
   newlyApplied: number;
@@ -310,6 +381,61 @@ export async function markAppliedFromLedger(): Promise<{
   return { newlyApplied: ids.length, appliedDocs: doneDocs };
 }
 
+// Detect Item Journal entries applied by D365 — match by Document No. in
+// the Ledger (Journal lines carry Document No. directly, unlike TOs which
+// get translated to TR####).
+export async function markJournalAppliedFromLedger(): Promise<{
+  newlyApplied: number;
+  appliedDocs: string[];
+}> {
+  let docs = new Set<string>();
+  const r = await sb().rpc("distinct_document_nos");
+  if (!r.error && Array.isArray(r.data)) {
+    for (const v of r.data as string[]) {
+      const d = (v ?? "").toString().trim();
+      if (d) docs.add(d);
+    }
+  } else {
+    const { data, error } = await sb()
+      .from(T_LEDGER)
+      .select("documentNo")
+      .not("documentNo", "is", null);
+    if (error) throw error;
+    for (const row of data ?? []) {
+      const d = ((row as any).documentNo ?? "").toString().trim();
+      if (d) docs.add(d);
+    }
+  }
+
+  const { data: candidates, error: e2 } = await sb()
+    .from(T_JOURNAL)
+    .select("id, documentNo, exported, applied")
+    .eq("exported", true)
+    .or("applied.is.null,applied.eq.false");
+  if (e2) throw e2;
+
+  const ids: string[] = [];
+  const doneDocs: string[] = [];
+  for (const j of (candidates ?? []) as Pick<
+    ItemJournalEntry,
+    "id" | "documentNo" | "exported" | "applied"
+  >[]) {
+    const d = (j.documentNo ?? "").trim();
+    if (d && docs.has(d)) {
+      ids.push(j.id);
+      doneDocs.push(d);
+    }
+  }
+  if (ids.length) {
+    const { error } = await sb()
+      .from(T_JOURNAL)
+      .update({ applied: true, appliedAt: new Date().toISOString() })
+      .in("id", ids);
+    if (error) throw error;
+  }
+  return { newlyApplied: ids.length, appliedDocs: doneDocs };
+}
+
 // ============ CLEAR ALL ============
 export async function clearAll() {
   const r1 = await sb().rpc("truncate_items");
@@ -318,4 +444,6 @@ export async function clearAll() {
   if (r2.error) await sb().from(T_LEDGER).delete().gte("entryNo", -9e18);
   const r3 = await sb().rpc("truncate_transfers");
   if (r3.error) await sb().from(T_TRANSFERS).delete().gte("id", "");
+  const r4 = await sb().rpc("truncate_journal");
+  if (r4.error) await sb().from(T_JOURNAL).delete().gte("id", "");
 }

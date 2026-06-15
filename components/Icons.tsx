@@ -101,6 +101,21 @@ export const DatabaseIcon = ({ className = "w-5 h-5" }: P) => (
   </svg>
 );
 
+export const EditIcon = ({ className = "w-4 h-4" }: P) => (
+  <svg viewBox="0 0 24 24" className={`${base} ${className}`} strokeWidth={sw} strokeLinecap="round" strokeLinejoin="round">
+    <path d="M12 20h9" />
+    <path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4 12.5-12.5Z" />
+  </svg>
+);
+
+export const JournalIcon = ({ className = "w-5 h-5" }: P) => (
+  <svg viewBox="0 0 24 24" className={`${base} ${className}`} strokeWidth={sw} strokeLinecap="round" strokeLinejoin="round">
+    <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20" />
+    <path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2Z" />
+    <path d="M8 7h7M8 11h7" />
+  </svg>
+);
+
 export const ArrowRightIcon = ({ className = "w-4 h-4" }: P) => (
   <svg viewBox="0 0 24 24" className={`${base} ${className}`} strokeWidth={sw} strokeLinecap="round" strokeLinejoin="round">
     <path d="M5 12h14M13 5l7 7-7 7" />

@@ -55,6 +55,29 @@ export type Transfer = {
   lines: TransferLine[];
 };
 
+export type ItemJournalEntry = {
+  id: string;
+  documentNo: string;            // LOT60008-YYMM### (auto-assigned, editable)
+  itemNo: string;
+  description?: string;
+  locationCode: string;          // 60008-EXP
+  quantity: number;
+  uom?: string;
+  // Negative Adjmt. side — the lot to undo
+  oldLotNo: string;
+  oldExpirationDate?: string;    // ISO YYYY-MM-DD
+  // Positive Adjmt. side — the corrected lot
+  newLotNo: string;
+  newExpirationDate?: string;    // ISO YYYY-MM-DD
+  postingDate?: string;          // set at export time, ISO YYYY-MM-DD
+  createdAt: string;
+  exported: boolean;
+  exportedAt?: string;
+  applied?: boolean;             // detected when documentNo appears in Ledger
+  appliedAt?: string;
+  note?: string;
+};
+
 export type StockSummary = {
   itemNo: string;
   description?: string;

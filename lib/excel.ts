@@ -1,6 +1,17 @@
 "use client";
 import * as XLSX from "xlsx";
-import type { Item, LedgerEntry, Transfer } from "./types";
+import type { Item, LedgerEntry, Transfer, ItemJournalEntry } from "./types";
+
+// DD/MM/YYYY for BC Item Journal imports
+function fmtDDMMYYYY(s?: string): string {
+  if (!s) return "";
+  const d = new Date(s);
+  if (isNaN(d.getTime())) return s; // already formatted? leave as-is
+  const dd = String(d.getDate()).padStart(2, "0");
+  const mm = String(d.getMonth() + 1).padStart(2, "0");
+  const yy = d.getFullYear();
+  return `${dd}/${mm}/${yy}`;
+}
 
 // ---------- helpers ----------
 function toStr(v: unknown): string {
@@ -178,6 +189,73 @@ export function exportTransferToBC(t: Transfer): Blob {
     });
   }
   return rowsToWorkbook(rows);
+}
+
+// ---------- Item Journal (BC import) ----------
+// Each entry → 2 rows: Negative Adjmt. (old lot) + Positive Adjmt. (new lot)
+export function exportJournalToBC(
+  entries: ItemJournalEntry[],
+  postingDateISO?: string,
+): { blob: Blob; included: number; skipped: number } {
+  const postingDate = fmtDDMMYYYY(postingDateISO ?? new Date().toISOString());
+  const rows: any[] = [];
+  let included = 0;
+  let skipped = 0;
+  for (const e of entries) {
+    if (!e.documentNo || !e.newLotNo || !e.oldLotNo || !e.quantity) {
+      skipped++;
+      continue;
+    }
+    rows.push({
+      "Posting Date": postingDate,
+      "Entry Type": "Negative Adjmt.",
+      "Document No.": e.documentNo,
+      "Group Document No.": "",
+      "Item No.": e.itemNo,
+      Location: e.locationCode,
+      "QTY.": e.quantity,
+      "Unit of Measure Code": e.uom ?? "",
+      LOT: e.oldLotNo,
+      EXP: fmtDDMMYYYY(e.oldExpirationDate),
+    });
+    rows.push({
+      "Posting Date": postingDate,
+      "Entry Type": "Positive Adjmt.",
+      "Document No.": e.documentNo,
+      "Group Document No.": "",
+      "Item No.": e.itemNo,
+      Location: e.locationCode,
+      "QTY.": e.quantity,
+      "Unit of Measure Code": e.uom ?? "",
+      LOT: e.newLotNo,
+      EXP: fmtDDMMYYYY(e.newExpirationDate),
+    });
+    included++;
+  }
+  const ws = XLSX.utils.json_to_sheet(rows, {
+    header: [
+      "Posting Date",
+      "Entry Type",
+      "Document No.",
+      "Group Document No.",
+      "Item No.",
+      "Location",
+      "QTY.",
+      "Unit of Measure Code",
+      "LOT",
+      "EXP",
+    ],
+  });
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, "Import to BC");
+  const buf = XLSX.write(wb, { type: "array", bookType: "xlsx" });
+  return {
+    blob: new Blob([buf], {
+      type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    }),
+    included,
+    skipped,
+  };
 }
 
 export function downloadBlob(blob: Blob, filename: string) {

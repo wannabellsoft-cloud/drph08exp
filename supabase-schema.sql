@@ -52,6 +52,31 @@ create table if not exists transfers (
 create index if not exists transfers_createdAt_idx     on transfers("createdAt" desc);
 create index if not exists transfers_externalDocNo_idx on transfers("externalDocNo");
 
+create table if not exists journal (
+  id                    text primary key,
+  "documentNo"          text not null,
+  "itemNo"              text,
+  description           text,
+  "locationCode"        text default '60008-EXP',
+  quantity              numeric default 0,
+  uom                   text,
+  "oldLotNo"            text,
+  "oldExpirationDate"   text,
+  "newLotNo"            text,
+  "newExpirationDate"   text,
+  "postingDate"         text,
+  "createdAt"           timestamptz default now(),
+  exported              boolean default false,
+  "exportedAt"          timestamptz,
+  applied               boolean default false,
+  "appliedAt"           timestamptz,
+  note                  text
+);
+create index if not exists journal_createdAt_idx  on journal("createdAt" desc);
+create index if not exists journal_documentNo_idx on journal("documentNo");
+create index if not exists journal_exported_idx   on journal(exported);
+create index if not exists journal_applied_idx    on journal(applied);
+
 -- ---------- RPC HELPERS ----------
 create or replace function distinct_external_docs()
 returns setof text language sql as $$
@@ -60,9 +85,17 @@ returns setof text language sql as $$
   where "externalDocNo" is not null and "externalDocNo" <> '';
 $$;
 
+create or replace function distinct_document_nos()
+returns setof text language sql as $$
+  select distinct "documentNo"
+  from ledger
+  where "documentNo" is not null and "documentNo" <> '';
+$$;
+
 create or replace function truncate_items()     returns void language sql as $$ truncate items;     $$;
 create or replace function truncate_ledger()    returns void language sql as $$ truncate ledger;    $$;
 create or replace function truncate_transfers() returns void language sql as $$ truncate transfers; $$;
+create or replace function truncate_journal()   returns void language sql as $$ truncate journal;   $$;
 
 -- ---------- ROW-LEVEL SECURITY ----------
 -- Open access for the anon role. This app uses no auth.
@@ -72,11 +105,14 @@ create or replace function truncate_transfers() returns void language sql as $$ 
 alter table items     enable row level security;
 alter table ledger    enable row level security;
 alter table transfers enable row level security;
+alter table journal   enable row level security;
 
 drop policy if exists "anon all items"     on items;
 drop policy if exists "anon all ledger"    on ledger;
 drop policy if exists "anon all transfers" on transfers;
+drop policy if exists "anon all journal"   on journal;
 
 create policy "anon all items"     on items     for all to anon using (true) with check (true);
 create policy "anon all ledger"    on ledger    for all to anon using (true) with check (true);
 create policy "anon all transfers" on transfers for all to anon using (true) with check (true);
+create policy "anon all journal"   on journal   for all to anon using (true) with check (true);

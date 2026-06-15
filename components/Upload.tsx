@@ -7,9 +7,11 @@ import {
   appendLedger,
   clearAll,
   markAppliedFromLedger,
+  markJournalAppliedFromLedger,
   countItems,
   countLedger,
   countTransfers,
+  countJournal,
 } from "@/lib/db";
 import { UploadIcon, DatabaseIcon, CheckIcon, TrashIcon, AlertIcon } from "./Icons";
 
@@ -34,20 +36,22 @@ export function Upload() {
   const [busy, setBusy] = useState<Mode | null>(null);
   const [progress, setProgress] = useState<{ n: number; total: number } | null>(null);
   const [msg, setMsg] = useState<{ kind: "ok" | "err"; text: string } | null>(null);
-  const [counts, setCounts] = useState<{ items: number; ledger: number; transfers: number }>({
-    items: 0,
-    ledger: 0,
-    transfers: 0,
-  });
+  const [counts, setCounts] = useState<{
+    items: number;
+    ledger: number;
+    transfers: number;
+    journal: number;
+  }>({ items: 0, ledger: 0, transfers: 0, journal: 0 });
 
   async function refreshCounts() {
     try {
-      const [items, ledger, transfers] = await Promise.all([
+      const [items, ledger, transfers, journal] = await Promise.all([
         countItems(),
         countLedger(),
         countTransfers(),
+        countJournal(),
       ]);
-      setCounts({ items, ledger, transfers });
+      setCounts({ items, ledger, transfers, journal });
     } catch (e: any) {
       setMsg({ kind: "err", text: e?.message ?? "อ่านข้อมูลไม่ได้" });
     }
@@ -90,13 +94,23 @@ export function Upload() {
         ? await replaceLedger(entries, reportProgress)
         : await appendLedger(entries, reportProgress);
       setProgress(null);
-      const { newlyApplied, appliedDocs } = await markAppliedFromLedger();
-      const tail =
+      const [{ newlyApplied, appliedDocs }, jr] = await Promise.all([
+        markAppliedFromLedger(),
+        markJournalAppliedFromLedger(),
+      ]);
+      const transferTail =
         newlyApplied > 0
-          ? ` • Mark applied อัตโนมัติ ${newlyApplied} ลัง (${appliedDocs.slice(0, 3).join(", ")}${
+          ? ` • TO applied ${newlyApplied} ลัง (${appliedDocs.slice(0, 3).join(", ")}${
               appliedDocs.length > 3 ? "…" : ""
             })`
           : "";
+      const journalTail =
+        jr.newlyApplied > 0
+          ? ` • Journal applied ${jr.newlyApplied} รายการ (${jr.appliedDocs
+              .slice(0, 3)
+              .join(", ")}${jr.appliedDocs.length > 3 ? "…" : ""})`
+          : "";
+      const tail = transferTail + journalTail;
       setMsg({
         kind: "ok",
         text: `${replace ? "แทนที่" : "เพิ่ม"} Ledger สำเร็จ: ${n.toLocaleString()} รายการ${tail}`,
@@ -112,10 +126,11 @@ export function Upload() {
   return (
     <div className="space-y-5">
       {/* Status row */}
-      <div className="grid grid-cols-3 gap-3">
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
         <CountCard label="Item Master" value={counts.items} />
         <CountCard label="Ledger Entries" value={counts.ledger} />
         <CountCard label="Transfers (TO)" value={counts.transfers} />
+        <CountCard label="Item Journal" value={counts.journal} />
       </div>
 
       {/* Upload cards */}

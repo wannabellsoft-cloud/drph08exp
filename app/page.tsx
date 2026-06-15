@@ -1,7 +1,7 @@
 "use client";
 import dynamic from "next/dynamic";
 import { useState } from "react";
-import { ScanIcon, BoxIcon, UploadIcon, PillIcon } from "@/components/Icons";
+import { ScanIcon, BoxIcon, UploadIcon, JournalIcon, PillIcon } from "@/components/Icons";
 import { SetupBanner } from "@/components/SetupBanner";
 import { isConfigured } from "@/lib/supabase";
 
@@ -10,10 +10,14 @@ const Upload = dynamic(() => import("@/components/Upload").then((m) => m.Upload)
 const Transfers = dynamic(() => import("@/components/Transfers").then((m) => m.Transfers), {
   ssr: false,
 });
+const Journal = dynamic(() => import("@/components/Journal").then((m) => m.Journal), {
+  ssr: false,
+});
 
 const TABS = [
   { key: "scan", label: "สแกน & สร้างลัง", Icon: ScanIcon },
   { key: "transfers", label: "Transfers", Icon: BoxIcon },
+  { key: "journal", label: "Item Journal", Icon: JournalIcon },
   { key: "upload", label: "Upload Data", Icon: UploadIcon },
 ] as const;
 
@@ -69,6 +73,7 @@ export default function Home() {
       <main className="max-w-7xl mx-auto px-4 lg:px-6 py-6">
         {tab === "scan" && <Scan />}
         {tab === "transfers" && <Transfers />}
+        {tab === "journal" && <Journal />}
         {tab === "upload" && <Upload />}
       </main>
 
