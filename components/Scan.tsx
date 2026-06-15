@@ -67,6 +67,7 @@ export function Scan() {
   const [editDraft, setEditDraft] = useState<EditDraft | null>(null);
   const [cameraOpen, setCameraOpen] = useState(false);
   const [isMobile, setIsMobile] = useState(false);
+  const [manualMode, setManualMode] = useState(false);
   const [toasts, setToasts] = useState<Toast[]>([]);
 
   function pushToast(kind: Toast["kind"], text: string) {
@@ -80,20 +81,22 @@ export function Scan() {
   }
 
   useEffect(() => {
-    inputRef.current?.focus();
     // Detect mobile/touch device so we only show the camera button there.
     // UA covers iPhone/iPad/Android; pointer:coarse covers touch-first devices
     // generically. Either being true is enough.
+    let mobile = false;
     try {
       const ua = navigator.userAgent || "";
       const uaIsMobile = /Android|iPhone|iPad|iPod|Mobile/i.test(ua);
       const coarse =
         typeof window.matchMedia === "function" &&
         window.matchMedia("(pointer: coarse)").matches;
-      setIsMobile(uaIsMobile || coarse);
-    } catch {
-      setIsMobile(false);
-    }
+      mobile = uaIsMobile || coarse;
+    } catch {}
+    setIsMobile(mobile);
+    // Auto-focus the keyboard input only on desktop — pulling up the soft
+    // keyboard on mobile would push the scan button off-screen.
+    if (!mobile) inputRef.current?.focus();
     (async () => {
       const cid = localStorage.getItem(CURRENT_CARTON_KEY);
       if (cid) {
@@ -343,6 +346,11 @@ export function Scan() {
     pushToast("ok", `สแกนได้: ${code}`);
   }
 
+  function openManualInput() {
+    setManualMode(true);
+    setTimeout(() => inputRef.current?.focus(), 50);
+  }
+
   const onHandLots = stock?.lots.filter((l) => l.locationCode === LOC_ON_HAND) ?? [];
   const expLots = stock?.lots.filter((l) => l.locationCode === LOC_EXP) ?? [];
 
@@ -360,36 +368,73 @@ export function Scan() {
     <div className="grid grid-cols-1 lg:grid-cols-12 gap-5">
       <div className="lg:col-span-8 space-y-5">
         <Card>
-          <div className="flex items-center gap-3 mb-3">
-            <div className="w-8 h-8 rounded-lg bg-emerald-50 text-emerald-600 grid place-items-center">
-              <ScanIcon className="w-4 h-4" />
-            </div>
-            <div>
-              <div className="text-sm font-semibold text-slate-900">Scan Barcode / Item No.</div>
-              <div className="text-xs text-slate-500">ยิงบาร์โค้ดหรือพิมพ์รหัสแล้วกด Enter</div>
-            </div>
-          </div>
-          <div className="flex gap-2">
-            <input
-              ref={inputRef}
-              value={barcode}
-              onChange={(e) => setBarcode(e.target.value)}
-              onKeyDown={onKey}
-              placeholder="เช่น 8852796203248 หรือ D21320006"
-              className="flex-1 min-w-0 px-4 py-3 text-lg font-medium border-2 border-slate-200 rounded-xl focus:outline-none focus:border-emerald-400 focus:ring-4 focus:ring-emerald-100 transition"
-            />
-            {isMobile && (
+          {isMobile ? (
+            <>
               <button
                 type="button"
                 onClick={() => setCameraOpen(true)}
-                title="เปิดกล้องเพื่อสแกนบาร์โค้ด"
-                className="flex items-center gap-1 px-3 sm:px-4 py-3 bg-emerald-600 text-white rounded-xl hover:bg-emerald-700 shadow-sm transition font-medium shrink-0"
+                className="w-full flex flex-col items-center justify-center gap-2 px-6 py-8 bg-gradient-to-br from-emerald-500 to-emerald-700 text-white rounded-2xl active:scale-[0.98] shadow-lg transition font-bold"
               >
-                <ScanIcon className="w-5 h-5" />
-                <span className="hidden sm:inline text-sm">Scan</span>
+                <ScanIcon className="w-12 h-12" />
+                <span className="text-xl">เปิดกล้องสแกน</span>
+                <span className="text-[11px] font-normal opacity-90">
+                  Barcode / QR — กล้องหลัง
+                </span>
               </button>
-            )}
-          </div>
+
+              {!manualMode ? (
+                <button
+                  type="button"
+                  onClick={openManualInput}
+                  className="w-full mt-3 text-xs text-slate-500 hover:text-slate-700 py-1"
+                >
+                  หรือ พิมพ์ Barcode / Item No. เอง
+                </button>
+              ) : (
+                <div className="mt-3">
+                  <input
+                    ref={inputRef}
+                    value={barcode}
+                    onChange={(e) => setBarcode(e.target.value)}
+                    onKeyDown={onKey}
+                    placeholder="พิมพ์ Barcode หรือ Item No. แล้วกด Enter"
+                    className="w-full px-4 py-2.5 text-base border-2 border-slate-200 rounded-xl focus:outline-none focus:border-emerald-400 focus:ring-4 focus:ring-emerald-100 transition"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setManualMode(false)}
+                    className="w-full mt-1.5 text-[11px] text-slate-400 hover:text-slate-600"
+                  >
+                    ซ่อนช่องพิมพ์
+                  </button>
+                </div>
+              )}
+            </>
+          ) : (
+            <>
+              <div className="flex items-center gap-3 mb-3">
+                <div className="w-8 h-8 rounded-lg bg-emerald-50 text-emerald-600 grid place-items-center">
+                  <ScanIcon className="w-4 h-4" />
+                </div>
+                <div>
+                  <div className="text-sm font-semibold text-slate-900">
+                    Scan Barcode / Item No.
+                  </div>
+                  <div className="text-xs text-slate-500">
+                    ยิงบาร์โค้ดหรือพิมพ์รหัสแล้วกด Enter
+                  </div>
+                </div>
+              </div>
+              <input
+                ref={inputRef}
+                value={barcode}
+                onChange={(e) => setBarcode(e.target.value)}
+                onKeyDown={onKey}
+                placeholder="เช่น 8852796203248 หรือ D21320006"
+                className="w-full px-4 py-3 text-lg font-medium border-2 border-slate-200 rounded-xl focus:outline-none focus:border-emerald-400 focus:ring-4 focus:ring-emerald-100 transition"
+              />
+            </>
+          )}
           {notFound && (
             <div className="mt-3 px-3 py-2 bg-rose-50 text-rose-700 text-sm rounded-lg border border-rose-200">
               {notFound}
