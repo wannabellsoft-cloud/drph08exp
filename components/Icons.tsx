@@ -141,6 +141,14 @@ export const MinusIcon = ({ className = "w-4 h-4" }: P) => (
   </svg>
 );
 
+export const ShareIcon = ({ className = "w-4 h-4" }: P) => (
+  <svg viewBox="0 0 24 24" className={`${base} ${className}`} strokeWidth={sw} strokeLinecap="round" strokeLinejoin="round">
+    <path d="M4 12v8a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-8" />
+    <polyline points="16 6 12 2 8 6" />
+    <line x1="12" y1="2" x2="12" y2="15" />
+  </svg>
+);
+
 export const SparkleIcon = ({ className = "w-4 h-4" }: P) => (
   <svg viewBox="0 0 24 24" className={`${base} ${className}`} strokeWidth={sw} strokeLinecap="round" strokeLinejoin="round">
     <path d="M12 3v3M12 18v3M3 12h3M18 12h3M5.6 5.6l2.1 2.1M16.3 16.3l2.1 2.1M5.6 18.4l2.1-2.1M16.3 7.7l2.1-2.1" />

@@ -33,6 +33,7 @@ import {
   SparkleIcon,
 } from "./Icons";
 import { ADDatePicker } from "./ADDatePicker";
+import { CloseSuccessModal } from "./CloseSuccessModal";
 
 const LOC_ON_HAND = "60008";
 const LOC_EXP = "60008-EXP";
@@ -72,6 +73,7 @@ export function Scan() {
   const [cameraOpen, setCameraOpen] = useState(false);
   const [isMobile, setIsMobile] = useState(false);
   const [manualMode, setManualMode] = useState(false);
+  const [closedTransfer, setClosedTransfer] = useState<Transfer | null>(null);
   const [toasts, setToasts] = useState<Toast[]>([]);
 
   function pushToast(kind: Toast["kind"], text: string) {
@@ -331,7 +333,7 @@ export function Scan() {
     localStorage.removeItem(CURRENT_CARTON_KEY);
     setCarton(null);
     await refreshNextDoc();
-    pushToast("ok", `ปิดลังเรียบร้อย — ${next.externalDocNo}`);
+    setClosedTransfer(next);
   }
 
   function onKey(e: React.KeyboardEvent<HTMLInputElement>) {
@@ -580,6 +582,18 @@ export function Scan() {
       {/* Camera scanner */}
       {cameraOpen && (
         <CameraScanner onResult={onCameraResult} onClose={() => setCameraOpen(false)} />
+      )}
+
+      {/* Close-success modal — TO No., print, share, new carton */}
+      {closedTransfer && (
+        <CloseSuccessModal
+          t={closedTransfer}
+          onClose={() => setClosedTransfer(null)}
+          onNewCarton={async () => {
+            setClosedTransfer(null);
+            await newCarton();
+          }}
+        />
       )}
 
       {/* Modal */}
