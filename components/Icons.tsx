@@ -116,6 +116,19 @@ export const JournalIcon = ({ className = "w-5 h-5" }: P) => (
   </svg>
 );
 
+export const CameraIcon = ({ className = "w-5 h-5" }: P) => (
+  <svg viewBox="0 0 24 24" className={`${base} ${className}`} strokeWidth={sw} strokeLinecap="round" strokeLinejoin="round">
+    <path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2Z" />
+    <circle cx="12" cy="13" r="4" />
+  </svg>
+);
+
+export const XIcon = ({ className = "w-5 h-5" }: P) => (
+  <svg viewBox="0 0 24 24" className={`${base} ${className}`} strokeWidth={sw} strokeLinecap="round" strokeLinejoin="round">
+    <path d="M18 6 6 18M6 6l12 12" />
+  </svg>
+);
+
 export const ArrowRightIcon = ({ className = "w-4 h-4" }: P) => (
   <svg viewBox="0 0 24 24" className={`${base} ${className}`} strokeWidth={sw} strokeLinecap="round" strokeLinejoin="round">
     <path d="M5 12h14M13 5l7 7-7 7" />
