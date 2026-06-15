@@ -7,8 +7,13 @@ import {
   getTransfer,
   closeTransfer,
   nextExternalDocNo,
+  nextJournalDocNo,
+  saveJournalEntry,
+  updateJournalQty,
+  deleteJournalIfPending,
+  JOURNAL_LOCATION,
 } from "@/lib/db";
-import type { StockSummary, Transfer, TransferLine } from "@/lib/types";
+import type { StockSummary, Transfer, TransferLine, ItemJournalEntry } from "@/lib/types";
 import {
   ScanIcon,
   PlusIcon,
@@ -16,6 +21,7 @@ import {
   TrashIcon,
   ArrowRightIcon,
   CheckIcon,
+  EditIcon,
 } from "./Icons";
 
 const LOC_ON_HAND = "60008";
@@ -23,11 +29,26 @@ const LOC_EXP = "60008-EXP";
 const STORE = "60008";
 const CURRENT_CARTON_KEY = "current_carton_id";
 
-function uid() {
-  return "C-" + Date.now().toString(36) + "-" + Math.random().toString(36).slice(2, 6);
+function uid(prefix = "C") {
+  return prefix + "-" + Date.now().toString(36) + "-" + Math.random().toString(36).slice(2, 6);
 }
 
 type Toast = { id: number; kind: "ok" | "warn" | "err"; text: string };
+
+type EditDraft = {
+  documentNo: string;
+  newLotNo: string;
+  newExpirationDate: string;
+  quantity: number;
+  // context from the clicked lot row
+  itemNo: string;
+  description?: string;
+  uom?: string;
+  oldLotNo: string;
+  oldExpirationDate?: string;
+  sourceLocation: string; // 60008 or 60008-EXP
+  maxQty: number;
+};
 
 export function Scan() {
   const inputRef = useRef<HTMLInputElement>(null);
@@ -37,6 +58,7 @@ export function Scan() {
   const [carton, setCarton] = useState<Transfer | null>(null);
   const [qtyDraft, setQtyDraft] = useState<Record<string, number>>({});
   const [nextDoc, setNextDoc] = useState<string>("");
+  const [editDraft, setEditDraft] = useState<EditDraft | null>(null);
   const [toasts, setToasts] = useState<Toast[]>([]);
 
   function pushToast(kind: Toast["kind"], text: string) {
@@ -61,9 +83,10 @@ export function Scan() {
     })();
   }, []);
 
-  async function newCarton() {
+  async function ensureCarton(): Promise<Transfer> {
+    if (carton && !carton.closed) return carton;
     const t: Transfer = {
-      id: uid(),
+      id: uid("C"),
       storeFrom: STORE,
       locationFrom: LOC_ON_HAND,
       storeTo: STORE,
@@ -75,6 +98,11 @@ export function Scan() {
     await saveTransfer(t);
     localStorage.setItem(CURRENT_CARTON_KEY, t.id);
     setCarton(t);
+    return t;
+  }
+
+  async function newCarton() {
+    await ensureCarton();
   }
 
   async function lookup(code: string) {
@@ -97,12 +125,9 @@ export function Scan() {
   }
 
   async function addLot(lotKey: string, lot: StockSummary["lots"][number], wantQty?: number) {
-    if (!carton) {
-      pushToast("warn", "กรุณาสร้างลังใหม่ก่อน");
-      return;
-    }
-    if (carton.closed) {
-      pushToast("err", "ลังนี้ปิดแล้ว — กดยกเลิกเอกสารใน Transfers ก่อนแก้");
+    const c = await ensureCarton();
+    if (c.closed) {
+      pushToast("err", "ลังนี้ปิดแล้ว");
       return;
     }
     if (lot.available <= 0) {
@@ -120,27 +145,126 @@ export function Scan() {
       uom: lot.uom,
       alreadyExp: lot.locationCode === LOC_EXP,
     };
-    const existing = carton.lines.findIndex(
+    const existing = c.lines.findIndex(
       (l) =>
         l.itemNo === line.itemNo &&
         l.lotNo === line.lotNo &&
-        l.alreadyExp === line.alreadyExp,
+        l.alreadyExp === line.alreadyExp &&
+        !l.journalEntryId, // never merge into a LOT-edited line
     );
-    const lines = [...carton.lines];
+    const lines = [...c.lines];
     if (existing >= 0) {
       lines[existing] = { ...lines[existing], quantity: lines[existing].quantity + qty };
     } else {
       lines.push(line);
     }
-    const next = { ...carton, lines };
+    const next = { ...c, lines };
     await saveTransfer(next);
     setCarton(next);
     await refreshStockOf(stock!.itemNo);
     pushToast("ok", `${line.alreadyExp ? "เพิ่มอ้างอิง" : "เพิ่มลงโอน"} ${qty} ชิ้น`);
   }
 
+  // Open "แก้ LOT" modal for a given lot row.
+  async function openEditModal(lot: StockSummary["lots"][number]) {
+    if (!stock) return;
+    if (lot.available <= 0) {
+      pushToast("err", "ยอดที่ใช้ได้เป็น 0 — แก้ไม่ได้");
+      return;
+    }
+    const docNo = await nextJournalDocNo();
+    setEditDraft({
+      documentNo: docNo,
+      newLotNo: lot.lotNo,
+      newExpirationDate: lot.expirationDate ?? "",
+      quantity: lot.available,
+      itemNo: stock.itemNo,
+      description: stock.description,
+      uom: lot.uom,
+      oldLotNo: lot.lotNo,
+      oldExpirationDate: lot.expirationDate,
+      sourceLocation: lot.locationCode,
+      maxQty: lot.available,
+    });
+  }
+
+  async function saveEditModal() {
+    if (!editDraft) return;
+    const d = editDraft;
+    if (!d.newLotNo.trim()) {
+      pushToast("err", "ระบุ New LOT");
+      return;
+    }
+    if (d.quantity <= 0 || d.quantity > d.maxQty) {
+      pushToast("err", `จำนวนต้องอยู่ระหว่าง 1 - ${d.maxQty}`);
+      return;
+    }
+    const sameAsOld =
+      d.newLotNo.trim() === d.oldLotNo &&
+      (d.newExpirationDate || "") === (d.oldExpirationDate || "");
+    if (sameAsOld) {
+      pushToast(
+        "warn",
+        "LOT/EXP ใหม่ตรงกับของเดิม — ใช้ปุ่ม 'โอน' / 'Ref' แทน (ไม่ต้องลง Journal)",
+      );
+      return;
+    }
+
+    const c = await ensureCarton();
+    if (c.closed) {
+      pushToast("err", "ลังนี้ปิดแล้ว");
+      return;
+    }
+
+    const journalId = uid("J");
+    const journal: ItemJournalEntry = {
+      id: journalId,
+      documentNo: d.documentNo.trim(),
+      itemNo: d.itemNo,
+      description: d.description,
+      locationCode: JOURNAL_LOCATION, // always 60008-EXP for the journal
+      quantity: d.quantity,
+      uom: d.uom,
+      oldLotNo: d.oldLotNo,
+      oldExpirationDate: d.oldExpirationDate,
+      newLotNo: d.newLotNo.trim(),
+      newExpirationDate: d.newExpirationDate || undefined,
+      createdAt: new Date().toISOString(),
+      exported: false,
+      cartonId: c.id,
+    };
+    await saveJournalEntry(journal);
+
+    const line: TransferLine = {
+      itemNo: d.itemNo,
+      description: d.description,
+      quantity: d.quantity,
+      lotNo: d.oldLotNo, // TO moves with the OLD lot — Journal renames it at destination
+      expirationDate: d.oldExpirationDate,
+      uom: d.uom,
+      alreadyExp: d.sourceLocation === LOC_EXP,
+      journalEntryId: journalId,
+      newLotNo: d.newLotNo.trim(),
+      newExpirationDate: d.newExpirationDate || undefined,
+    };
+    const lines = [...c.lines, line];
+    const next = { ...c, lines };
+    await saveTransfer(next);
+    setCarton(next);
+    setEditDraft(null);
+    await refreshStockOf(d.itemNo);
+    pushToast(
+      "ok",
+      `แก้ LOT ${d.oldLotNo} → ${d.newLotNo} ${d.quantity} ชิ้น • Journal ${d.documentNo}`,
+    );
+  }
+
   async function removeLine(idx: number) {
     if (!carton || carton.closed) return;
+    const line = carton.lines[idx];
+    if (line.journalEntryId) {
+      await deleteJournalIfPending(line.journalEntryId);
+    }
     const lines = carton.lines.filter((_, i) => i !== idx);
     const next = { ...carton, lines };
     await saveTransfer(next);
@@ -150,9 +274,13 @@ export function Scan() {
 
   async function updateLineQty(idx: number, q: number) {
     if (!carton || carton.closed) return;
-    const lines = carton.lines.map((l, i) =>
-      i === idx ? { ...l, quantity: Math.max(0, q) } : l,
-    );
+    const line = carton.lines[idx];
+    const safe = Math.max(0, q);
+    if (line.journalEntryId) {
+      if (safe === 0) await deleteJournalIfPending(line.journalEntryId);
+      else await updateJournalQty(line.journalEntryId, safe);
+    }
+    const lines = carton.lines.map((l, i) => (i === idx ? { ...l, quantity: safe } : l));
     const next = { ...carton, lines };
     await saveTransfer(next);
     setCarton(next);
@@ -165,7 +293,7 @@ export function Scan() {
       pushToast("warn", "ลังยังไม่มีรายการ");
       return;
     }
-    const next = await closeTransfer(carton); // auto-assigns next TO08EXP-####
+    const next = await closeTransfer(carton);
     localStorage.removeItem(CURRENT_CARTON_KEY);
     setCarton(null);
     await refreshNextDoc();
@@ -189,12 +317,12 @@ export function Scan() {
         toMoveLines: carton.lines.filter((l) => !l.alreadyExp).length,
         already: carton.lines.filter((l) => l.alreadyExp).reduce((a, l) => a + l.quantity, 0),
         alreadyLines: carton.lines.filter((l) => l.alreadyExp).length,
+        edits: carton.lines.filter((l) => l.journalEntryId).length,
       }
     : null;
 
   return (
     <div className="grid grid-cols-1 lg:grid-cols-12 gap-5">
-      {/* Left: scan + stock */}
       <div className="lg:col-span-8 space-y-5">
         <Card>
           <div className="flex items-center gap-3 mb-3">
@@ -248,8 +376,8 @@ export function Scan() {
                 qtyDraft={qtyDraft}
                 setQtyDraft={setQtyDraft}
                 onAdd={(k, lot) => addLot(k, lot)}
+                onEdit={(lot) => openEditModal(lot)}
                 actionLabel="โอน"
-                disabled={!carton}
               />
               <LotTable
                 title="Location 60008-EXP"
@@ -259,8 +387,8 @@ export function Scan() {
                 qtyDraft={qtyDraft}
                 setQtyDraft={setQtyDraft}
                 onAdd={(k, lot) => addLot(k, lot)}
+                onEdit={(lot) => openEditModal(lot)}
                 actionLabel="Ref"
-                disabled={!carton}
               />
             </div>
 
@@ -282,7 +410,6 @@ export function Scan() {
         )}
       </div>
 
-      {/* Right: carton */}
       <div className="lg:col-span-4">
         <div className="sticky top-20 space-y-3">
           <Card>
@@ -316,71 +443,27 @@ export function Scan() {
             </div>
 
             {carton && cartonStats && (
-              <div className="grid grid-cols-2 gap-2 mb-3">
+              <div className="grid grid-cols-3 gap-2 mb-3">
                 <Stat label="ต้องโอน" value={cartonStats.toMove} sub={`${cartonStats.toMoveLines} lot`} tone="amber" />
                 <Stat label="อ้างอิง" value={cartonStats.already} sub={`${cartonStats.alreadyLines} lot`} tone="emerald" />
+                <Stat label="LOT แก้" value={cartonStats.edits} sub="Journal" tone="indigo" />
               </div>
             )}
 
             {carton ? (
               carton.lines.length === 0 ? (
                 <div className="text-sm text-slate-400 italic text-center py-8 border border-dashed border-slate-200 rounded-lg">
-                  ยังไม่มีรายการ — ยิงบาร์โค้ดแล้วกดปุ่ม "โอน" หรือ "Ref"
+                  ยังไม่มีรายการ
                 </div>
               ) : (
                 <div className="space-y-1.5 max-h-[55vh] overflow-y-auto scroll-thin -mx-1 px-1">
                   {carton.lines.map((l, i) => (
-                    <div
+                    <CartonLineRow
                       key={i}
-                      className={`text-sm rounded-lg p-2.5 border transition ${
-                        l.alreadyExp
-                          ? "border-emerald-200 bg-emerald-50/60"
-                          : "border-amber-200 bg-amber-50/60"
-                      }`}
-                    >
-                      <div className="flex justify-between gap-2 items-start">
-                        <div className="flex-1 min-w-0">
-                          <div className="flex items-center gap-1.5">
-                            <span
-                              className={`text-[9px] font-bold uppercase tracking-wide px-1.5 py-0.5 rounded ${
-                                l.alreadyExp
-                                  ? "bg-emerald-600 text-white"
-                                  : "bg-amber-500 text-white"
-                              }`}
-                            >
-                              {l.alreadyExp ? "REF" : "MOVE"}
-                            </span>
-                            <span className="font-mono text-xs font-semibold text-slate-800">
-                              {l.itemNo}
-                            </span>
-                          </div>
-                          <div className="text-[11px] text-slate-600 truncate mt-0.5">
-                            {l.description}
-                          </div>
-                          <div className="text-[11px] text-slate-500 mt-0.5">
-                            Lot <span className="font-mono">{l.lotNo}</span> · Exp{" "}
-                            {l.expirationDate || "-"}
-                          </div>
-                        </div>
-                        <div className="flex flex-col items-end gap-1">
-                          <input
-                            type="number"
-                            min={0}
-                            value={l.quantity}
-                            onChange={(e) =>
-                              updateLineQty(i, parseInt(e.target.value || "0", 10))
-                            }
-                            className="w-16 text-right border border-slate-300 rounded-md px-1.5 py-0.5 text-sm font-semibold"
-                          />
-                          <button
-                            onClick={() => removeLine(i)}
-                            className="flex items-center gap-0.5 text-[11px] text-rose-500 hover:text-rose-700"
-                          >
-                            <TrashIcon className="w-3 h-3" /> ลบ
-                          </button>
-                        </div>
-                      </div>
-                    </div>
+                      line={l}
+                      onChangeQty={(q) => updateLineQty(i, q)}
+                      onRemove={() => removeLine(i)}
+                    />
                   ))}
                 </div>
               )
@@ -389,17 +472,23 @@ export function Scan() {
                 <div className="w-12 h-12 mx-auto rounded-full bg-slate-100 grid place-items-center mb-2">
                   <PlusIcon className="w-5 h-5 text-slate-400" />
                 </div>
-                <div className="text-sm text-slate-500">
-                  ยังไม่มีลังเปิดอยู่
-                </div>
-                <div className="text-xs text-slate-400 mt-0.5">
-                  กด "ลังใหม่" เพื่อเริ่มสร้าง TO
-                </div>
+                <div className="text-sm text-slate-500">ยังไม่มีลังเปิดอยู่</div>
+                <div className="text-xs text-slate-400 mt-0.5">กด "ลังใหม่" เพื่อเริ่มสร้าง TO</div>
               </div>
             )}
           </Card>
         </div>
       </div>
+
+      {/* Modal */}
+      {editDraft && (
+        <EditLotModal
+          d={editDraft}
+          onChange={setEditDraft}
+          onCancel={() => setEditDraft(null)}
+          onSave={saveEditModal}
+        />
+      )}
 
       {/* Toasts */}
       <div className="fixed bottom-4 right-4 space-y-2 z-50">
@@ -442,17 +531,87 @@ function Stat({
   label: string;
   value: number;
   sub?: string;
-  tone: "amber" | "emerald";
+  tone: "amber" | "emerald" | "indigo";
 }) {
   const tones = {
     amber: "bg-amber-50 text-amber-700 border-amber-100",
     emerald: "bg-emerald-50 text-emerald-700 border-emerald-100",
+    indigo: "bg-indigo-50 text-indigo-700 border-indigo-100",
   };
   return (
-    <div className={`rounded-xl border px-3 py-2 ${tones[tone]}`}>
-      <div className="text-[10px] uppercase tracking-wide font-semibold opacity-70">{label}</div>
-      <div className="text-xl font-extrabold leading-tight">{value}</div>
-      {sub && <div className="text-[10px] opacity-60">{sub}</div>}
+    <div className={`rounded-xl border px-2.5 py-1.5 ${tones[tone]}`}>
+      <div className="text-[9px] uppercase tracking-wide font-semibold opacity-70">{label}</div>
+      <div className="text-lg font-extrabold leading-tight">{value}</div>
+      {sub && <div className="text-[9px] opacity-60">{sub}</div>}
+    </div>
+  );
+}
+
+function CartonLineRow({
+  line,
+  onChangeQty,
+  onRemove,
+}: {
+  line: TransferLine;
+  onChangeQty: (q: number) => void;
+  onRemove: () => void;
+}) {
+  const isEdit = !!line.journalEntryId;
+  return (
+    <div
+      className={`text-sm rounded-lg p-2.5 border transition ${
+        isEdit
+          ? "border-indigo-300 bg-indigo-50/60"
+          : line.alreadyExp
+          ? "border-emerald-200 bg-emerald-50/60"
+          : "border-amber-200 bg-amber-50/60"
+      }`}
+    >
+      <div className="flex justify-between gap-2 items-start">
+        <div className="flex-1 min-w-0">
+          <div className="flex items-center gap-1.5 flex-wrap">
+            <span
+              className={`text-[9px] font-bold uppercase tracking-wide px-1.5 py-0.5 rounded ${
+                line.alreadyExp ? "bg-emerald-600 text-white" : "bg-amber-500 text-white"
+              }`}
+            >
+              {line.alreadyExp ? "REF" : "MOVE"}
+            </span>
+            {isEdit && (
+              <span className="text-[9px] font-bold uppercase tracking-wide px-1.5 py-0.5 rounded bg-indigo-600 text-white">
+                JOURNAL
+              </span>
+            )}
+            <span className="font-mono text-xs font-semibold text-slate-800">{line.itemNo}</span>
+          </div>
+          <div className="text-[11px] text-slate-600 truncate mt-0.5">{line.description}</div>
+          <div className="text-[11px] text-slate-500 mt-0.5">
+            Lot <span className="font-mono">{line.lotNo}</span> · Exp{" "}
+            {line.expirationDate || "-"}
+          </div>
+          {isEdit && (
+            <div className="text-[11px] text-indigo-700 mt-0.5 font-medium">
+              → New Lot <span className="font-mono">{line.newLotNo}</span>
+              {line.newExpirationDate && ` · ${line.newExpirationDate}`}
+            </div>
+          )}
+        </div>
+        <div className="flex flex-col items-end gap-1">
+          <input
+            type="number"
+            min={0}
+            value={line.quantity}
+            onChange={(e) => onChangeQty(parseInt(e.target.value || "0", 10))}
+            className="w-16 text-right border border-slate-300 rounded-md px-1.5 py-0.5 text-sm font-semibold"
+          />
+          <button
+            onClick={onRemove}
+            className="flex items-center gap-0.5 text-[11px] text-rose-500 hover:text-rose-700"
+          >
+            <TrashIcon className="w-3 h-3" /> ลบ
+          </button>
+        </div>
+      </div>
     </div>
   );
 }
@@ -465,8 +624,8 @@ function LotTable(props: {
   qtyDraft: Record<string, number>;
   setQtyDraft: (m: Record<string, number>) => void;
   onAdd: (key: string, lot: StockSummary["lots"][number], q?: number) => void;
+  onEdit: (lot: StockSummary["lots"][number]) => void;
   actionLabel: string;
-  disabled: boolean;
 }) {
   const tones = {
     amber: {
@@ -499,7 +658,7 @@ function LotTable(props: {
               <tr className="bg-slate-50 text-slate-500">
                 <th className="text-left font-medium px-2 py-1.5">Lot / Exp</th>
                 <th className="text-right font-medium px-2 py-1.5">ใช้ได้</th>
-                <th className="px-1 py-1.5 w-16"></th>
+                <th className="px-1 py-1.5 w-14"></th>
                 <th className="px-1 py-1.5"></th>
               </tr>
             </thead>
@@ -514,9 +673,7 @@ function LotTable(props: {
                       <div className="text-[10px] text-slate-400">{l.expirationDate || "—"}</div>
                     </td>
                     <td className="px-2 py-1.5 text-right">
-                      <div
-                        className={`font-bold ${noAvail ? "text-rose-500" : "text-slate-900"}`}
-                      >
+                      <div className={`font-bold ${noAvail ? "text-rose-500" : "text-slate-900"}`}>
                         {l.available}
                       </div>
                       {l.reserved > 0 && (
@@ -531,25 +688,35 @@ function LotTable(props: {
                         min={1}
                         max={l.available}
                         defaultValue={l.available > 0 ? l.available : 0}
-                        disabled={noAvail || props.disabled}
+                        disabled={noAvail}
                         onChange={(e) =>
                           props.setQtyDraft({
                             ...props.qtyDraft,
                             [k]: parseInt(e.target.value || "0", 10),
                           })
                         }
-                        className="w-14 text-right border border-slate-300 rounded-md px-1 py-0.5 disabled:bg-slate-100 disabled:text-slate-400"
+                        className="w-12 text-right border border-slate-300 rounded-md px-1 py-0.5 disabled:bg-slate-100 disabled:text-slate-400"
                       />
                     </td>
                     <td className="px-1 py-1.5">
-                      <button
-                        onClick={() => props.onAdd(k, l)}
-                        disabled={props.disabled || noAvail}
-                        className={`flex items-center gap-0.5 px-2 py-1 text-[11px] font-semibold text-white rounded-md disabled:opacity-30 disabled:cursor-not-allowed transition ${tones.btn}`}
-                      >
-                        {props.actionLabel}
-                        <ArrowRightIcon className="w-3 h-3" />
-                      </button>
+                      <div className="flex gap-1 justify-end">
+                        <button
+                          onClick={() => props.onAdd(k, l)}
+                          disabled={noAvail}
+                          className={`flex items-center gap-0.5 px-2 py-1 text-[11px] font-semibold text-white rounded-md disabled:opacity-30 disabled:cursor-not-allowed transition ${tones.btn}`}
+                        >
+                          {props.actionLabel}
+                          <ArrowRightIcon className="w-3 h-3" />
+                        </button>
+                        <button
+                          onClick={() => props.onEdit(l)}
+                          disabled={noAvail}
+                          title="แก้ LOT / EXP (สร้าง Journal Adjmt.)"
+                          className="flex items-center gap-0.5 px-2 py-1 text-[11px] font-semibold text-white bg-indigo-600 hover:bg-indigo-700 rounded-md disabled:opacity-30 disabled:cursor-not-allowed transition"
+                        >
+                          <EditIcon className="w-3 h-3" />
+                        </button>
+                      </div>
                     </td>
                   </tr>
                 );
@@ -559,5 +726,133 @@ function LotTable(props: {
         </div>
       )}
     </div>
+  );
+}
+
+function EditLotModal({
+  d,
+  onChange,
+  onCancel,
+  onSave,
+}: {
+  d: EditDraft;
+  onChange: (d: EditDraft) => void;
+  onCancel: () => void;
+  onSave: () => void;
+}) {
+  return (
+    <div className="fixed inset-0 z-30 flex items-center justify-center bg-slate-900/40 backdrop-blur-sm no-print">
+      <div className="bg-white rounded-2xl shadow-2xl border border-slate-200 max-w-lg w-full mx-4">
+        <div className="px-5 pt-5 pb-3 border-b border-slate-100">
+          <div className="text-[10px] uppercase tracking-widest text-indigo-600">Item Journal</div>
+          <h2 className="font-bold text-slate-900 text-lg">แก้ LOT / EXP</h2>
+          <p className="text-xs text-slate-500 mt-0.5">
+            สร้าง Journal Adjmt. + ใส่ลงลังพร้อมกัน (ยอด Remain จะถูกหักออกทันที)
+          </p>
+        </div>
+        <div className="p-5 space-y-3 text-sm">
+          <Field label="Document No.">
+            <input
+              value={d.documentNo}
+              onChange={(e) => onChange({ ...d, documentNo: e.target.value })}
+              className="w-full px-3 py-1.5 font-mono text-sm border border-slate-300 rounded-lg focus:outline-none focus:border-indigo-400 focus:ring-2 focus:ring-indigo-100"
+            />
+          </Field>
+
+          <div className="grid grid-cols-2 gap-3">
+            <Field label="Item No.">
+              <div className="px-3 py-1.5 bg-slate-100 rounded-lg font-mono text-slate-700">
+                {d.itemNo}
+              </div>
+            </Field>
+            <Field label="Source / Journal Location">
+              <div className="px-3 py-1.5 bg-slate-100 rounded-lg font-mono text-slate-700 text-xs">
+                {d.sourceLocation}{" "}
+                <span className="text-slate-400">→ Journal:</span>{" "}
+                <span className="text-indigo-700 font-semibold">60008-EXP</span>
+              </div>
+            </Field>
+          </div>
+
+          {d.description && <div className="text-xs text-slate-500 truncate">{d.description}</div>}
+
+          <div className="bg-rose-50/50 border border-rose-200 rounded-xl p-3">
+            <div className="text-[10px] uppercase font-semibold text-rose-700 mb-2">
+              Negative Adjmt. (LOT เดิม)
+            </div>
+            <div className="grid grid-cols-2 gap-3">
+              <Field label="Old LOT">
+                <div className="px-3 py-1.5 bg-white rounded-lg font-mono">{d.oldLotNo}</div>
+              </Field>
+              <Field label="Old EXP">
+                <div className="px-3 py-1.5 bg-white rounded-lg text-slate-700">
+                  {d.oldExpirationDate || "—"}
+                </div>
+              </Field>
+            </div>
+          </div>
+
+          <div className="bg-emerald-50/50 border border-emerald-200 rounded-xl p-3">
+            <div className="text-[10px] uppercase font-semibold text-emerald-700 mb-2">
+              Positive Adjmt. (LOT ใหม่)
+            </div>
+            <div className="grid grid-cols-2 gap-3">
+              <Field label="New LOT">
+                <input
+                  value={d.newLotNo}
+                  onChange={(e) => onChange({ ...d, newLotNo: e.target.value })}
+                  placeholder="LOT ใหม่"
+                  className="w-full px-3 py-1.5 font-mono border border-slate-300 rounded-lg focus:outline-none focus:border-emerald-400 focus:ring-2 focus:ring-emerald-100"
+                />
+              </Field>
+              <Field label="New EXP">
+                <input
+                  type="date"
+                  value={d.newExpirationDate}
+                  onChange={(e) => onChange({ ...d, newExpirationDate: e.target.value })}
+                  className="w-full px-3 py-1.5 border border-slate-300 rounded-lg focus:outline-none focus:border-emerald-400 focus:ring-2 focus:ring-emerald-100"
+                />
+              </Field>
+            </div>
+          </div>
+
+          <Field label={`Quantity (สูงสุด ${d.maxQty})`}>
+            <input
+              type="number"
+              min={1}
+              max={d.maxQty}
+              value={d.quantity}
+              onChange={(e) => onChange({ ...d, quantity: parseInt(e.target.value || "0", 10) })}
+              className="w-32 px-3 py-1.5 text-right font-semibold border border-slate-300 rounded-lg focus:outline-none focus:border-indigo-400 focus:ring-2 focus:ring-indigo-100"
+            />
+          </Field>
+        </div>
+        <div className="px-5 py-3 bg-slate-50 border-t border-slate-200 rounded-b-2xl flex justify-end gap-2">
+          <button
+            onClick={onCancel}
+            className="px-4 py-1.5 text-sm text-slate-600 hover:text-slate-900"
+          >
+            ยกเลิก
+          </button>
+          <button
+            onClick={onSave}
+            className="flex items-center gap-1 px-4 py-1.5 bg-indigo-600 text-white text-sm rounded-lg hover:bg-indigo-700 shadow-sm"
+          >
+            <CheckIcon /> Confirm
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function Field({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <label className="block">
+      <div className="text-[10px] uppercase tracking-wide font-semibold text-slate-500 mb-0.5">
+        {label}
+      </div>
+      {children}
+    </label>
   );
 }

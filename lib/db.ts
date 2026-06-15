@@ -254,6 +254,9 @@ export async function reopenTransfer(t: Transfer) {
 }
 
 export async function deleteTransferAndRevert(id: string) {
+  // Cascade-delete pending Journal entries that were created alongside
+  // this carton — they reference the carton via cartonId.
+  await deletePendingJournalsForCarton(id);
   const { error } = await sb().from(T_TRANSFERS).delete().eq("id", id);
   if (error) throw error;
 }
@@ -298,6 +301,34 @@ export async function getJournalEntry(id: string): Promise<ItemJournalEntry | un
 
 export async function deleteJournalEntry(id: string) {
   const { error } = await sb().from(T_JOURNAL).delete().eq("id", id);
+  if (error) throw error;
+}
+
+export async function updateJournalQty(id: string, quantity: number) {
+  // Only updates if still pending — exported entries are locked.
+  const { error } = await sb()
+    .from(T_JOURNAL)
+    .update({ quantity })
+    .eq("id", id)
+    .eq("exported", false);
+  if (error) throw error;
+}
+
+export async function deleteJournalIfPending(id: string) {
+  const { error } = await sb()
+    .from(T_JOURNAL)
+    .delete()
+    .eq("id", id)
+    .eq("exported", false);
+  if (error) throw error;
+}
+
+export async function deletePendingJournalsForCarton(cartonId: string) {
+  const { error } = await sb()
+    .from(T_JOURNAL)
+    .delete()
+    .eq("cartonId", cartonId)
+    .eq("exported", false);
   if (error) throw error;
 }
 

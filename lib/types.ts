@@ -33,6 +33,11 @@ export type TransferLine = {
   expirationDate?: string;
   uom?: string;
   alreadyExp: boolean; // true if this lot is already at 60008-EXP
+  // LOT/EXP correction — when set, this line also has a sibling Journal
+  // entry that renames the lot at 60008-EXP after the TO is applied.
+  journalEntryId?: string;
+  newLotNo?: string;
+  newExpirationDate?: string;
 };
 
 export type Transfer = {
@@ -76,6 +81,7 @@ export type ItemJournalEntry = {
   applied?: boolean;             // detected when documentNo appears in Ledger
   appliedAt?: string;
   note?: string;
+  cartonId?: string; // links back to the Transfer that created this entry
 };
 
 export type StockSummary = {

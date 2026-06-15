@@ -72,10 +72,12 @@ create table if not exists journal (
   "appliedAt"           timestamptz,
   note                  text
 );
+alter table journal add column if not exists "cartonId" text;
 create index if not exists journal_createdAt_idx  on journal("createdAt" desc);
 create index if not exists journal_documentNo_idx on journal("documentNo");
 create index if not exists journal_exported_idx   on journal(exported);
 create index if not exists journal_applied_idx    on journal(applied);
+create index if not exists journal_cartonId_idx   on journal("cartonId");
 
 -- ---------- RPC HELPERS ----------
 create or replace function distinct_external_docs()
