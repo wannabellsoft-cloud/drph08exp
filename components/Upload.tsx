@@ -7,7 +7,9 @@ import {
   appendLedger,
   clearAll,
   markAppliedFromLedger,
-  db,
+  countItems,
+  countLedger,
+  countTransfers,
 } from "@/lib/db";
 import { UploadIcon, DatabaseIcon, CheckIcon, TrashIcon, AlertIcon } from "./Icons";
 
@@ -15,6 +17,7 @@ type Mode = "items" | "ledger-replace" | "ledger-append";
 
 export function Upload() {
   const [busy, setBusy] = useState<Mode | null>(null);
+  const [progress, setProgress] = useState<{ n: number; total: number } | null>(null);
   const [msg, setMsg] = useState<{ kind: "ok" | "err"; text: string } | null>(null);
   const [counts, setCounts] = useState<{ items: number; ledger: number; transfers: number }>({
     items: 0,
@@ -23,12 +26,16 @@ export function Upload() {
   });
 
   async function refreshCounts() {
-    const [items, ledger, transfers] = await Promise.all([
-      db().items.count(),
-      db().ledger.count(),
-      db().transfers.count(),
-    ]);
-    setCounts({ items, ledger, transfers });
+    try {
+      const [items, ledger, transfers] = await Promise.all([
+        countItems(),
+        countLedger(),
+        countTransfers(),
+      ]);
+      setCounts({ items, ledger, transfers });
+    } catch (e: any) {
+      setMsg({ kind: "err", text: e?.message ?? "อ่านข้อมูลไม่ได้" });
+    }
   }
 
   useEffect(() => {
@@ -54,12 +61,16 @@ export function Upload() {
   async function handleLedger(f: File, replace: boolean) {
     setBusy(replace ? "ledger-replace" : "ledger-append");
     setMsg(null);
+    setProgress(null);
     try {
       const wb = await readWorkbook(f);
       const rows = sheetRows(wb);
       const entries = parseLedger(rows);
-      const n = replace ? await replaceLedger(entries) : await appendLedger(entries);
-      // Auto-detect transfers that D365 has already processed
+      const reportProgress = (n: number, total: number) => setProgress({ n, total });
+      const n = replace
+        ? await replaceLedger(entries, reportProgress)
+        : await appendLedger(entries, reportProgress);
+      setProgress(null);
       const { newlyApplied, appliedDocs } = await markAppliedFromLedger();
       const tail =
         newlyApplied > 0
@@ -75,6 +86,7 @@ export function Upload() {
     } catch (e: any) {
       setMsg({ kind: "err", text: e?.message ?? "Error" });
     }
+    setProgress(null);
     setBusy(null);
   }
 
@@ -122,6 +134,24 @@ export function Upload() {
           ]}
         />
       </div>
+
+      {/* Progress */}
+      {progress && (
+        <div className="bg-white border border-slate-200 rounded-xl p-3">
+          <div className="flex justify-between text-xs text-slate-600 mb-1">
+            <span>กำลังอัพโหลด Ledger ขึ้น cloud...</span>
+            <span className="font-mono">
+              {progress.n.toLocaleString()} / {progress.total.toLocaleString()}
+            </span>
+          </div>
+          <div className="h-2 bg-slate-100 rounded-full overflow-hidden">
+            <div
+              className="h-full bg-emerald-500 transition-all"
+              style={{ width: `${(progress.n / Math.max(1, progress.total)) * 100}%` }}
+            />
+          </div>
+        </div>
+      )}
 
       {/* Message */}
       {msg && (

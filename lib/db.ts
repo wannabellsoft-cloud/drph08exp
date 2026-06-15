@@ -1,106 +1,140 @@
 "use client";
-import Dexie, { Table } from "dexie";
+import { sb, isConfigured } from "./supabase";
 import type { Item, LedgerEntry, Transfer, StockSummary } from "./types";
 
-export class AppDB extends Dexie {
-  items!: Table<Item, string>;
-  ledger!: Table<LedgerEntry, number>;
-  transfers!: Table<Transfer, string>;
+export { isConfigured };
+export const EXTERNAL_DOC_PREFIX = "TO08EXP-";
+export const EXTERNAL_DOC_PAD = 4;
 
-  constructor() {
-    super("exp_manager");
-    this.version(1).stores({
-      items: "itemNo, barcode, description",
-      ledger:
-        "entryNo, itemNo, locationCode, lotNo, [itemNo+locationCode], [itemNo+lotNo+locationCode]",
-      transfers: "id, externalDocNo, closed, createdAt",
-    });
-    this.version(2).stores({
-      items: "itemNo, barcode, description",
-      ledger:
-        "entryNo, itemNo, locationCode, lotNo, sourceTransferId, [itemNo+locationCode], [itemNo+lotNo+locationCode]",
-      transfers: "id, externalDocNo, closed, createdAt",
-    });
-    // v3 cleans up any synthetic ledger entries created by an earlier
-    // version of the app — we no longer mutate the ledger when a transfer
-    // is closed; "available" is computed by subtracting reservations.
-    this.version(3).upgrade(async (tx) => {
-      await tx
-        .table("ledger")
-        .filter((e: LedgerEntry) => !!e.sourceTransferId)
-        .delete();
-    });
-    // v4 adds an index on Ledger.externalDocNo so we can quickly detect
-    // when D365 has applied a TO; and an applied index on Transfers.
-    this.version(4).stores({
-      items: "itemNo, barcode, description",
-      ledger:
-        "entryNo, itemNo, locationCode, lotNo, externalDocNo, sourceTransferId, [itemNo+locationCode], [itemNo+lotNo+locationCode]",
-      transfers: "id, externalDocNo, closed, applied, createdAt",
-    });
-  }
-}
+const T_ITEMS = "items";
+const T_LEDGER = "ledger";
+const T_TRANSFERS = "transfers";
 
-let _db: AppDB | null = null;
-export function db(): AppDB {
-  if (typeof window === "undefined") {
-    // SSR safety — Dexie needs IndexedDB
-    throw new Error("DB only available in browser");
-  }
-  if (!_db) _db = new AppDB();
-  return _db;
-}
-
+// ============ ITEMS ============
 export async function findItemByBarcode(barcode: string): Promise<Item | undefined> {
-  const norm = barcode.trim();
-  if (!norm) return undefined;
-  // Try exact barcode match first
-  const byBarcode = await db().items.where("barcode").equals(norm).first();
-  if (byBarcode) return byBarcode;
-  // Fallback: maybe scanner sent the item No. directly
-  return await db().items.get(norm);
+  const code = barcode.trim();
+  if (!code) return undefined;
+  // Try barcode match first
+  const r1 = await sb()
+    .from(T_ITEMS)
+    .select("*")
+    .eq("barcode", code)
+    .limit(1)
+    .maybeSingle();
+  if (r1.data) return r1.data as Item;
+  // Fallback: maybe user typed Item No. directly
+  const r2 = await sb()
+    .from(T_ITEMS)
+    .select("*")
+    .eq("itemNo", code)
+    .maybeSingle();
+  return (r2.data ?? undefined) as Item | undefined;
 }
 
+export async function upsertItems(items: Item[]): Promise<number> {
+  if (!items.length) return 0;
+  const CHUNK = 1000;
+  for (let i = 0; i < items.length; i += CHUNK) {
+    const slice = items.slice(i, i + CHUNK);
+    const { error } = await sb().from(T_ITEMS).upsert(slice, { onConflict: "itemNo" });
+    if (error) throw error;
+  }
+  return items.length;
+}
+
+export async function countItems(): Promise<number> {
+  const { count, error } = await sb().from(T_ITEMS).select("*", { count: "exact", head: true });
+  if (error) throw error;
+  return count ?? 0;
+}
+
+// ============ LEDGER ============
+export async function replaceLedger(
+  entries: LedgerEntry[],
+  onProgress?: (n: number, total: number) => void,
+): Promise<number> {
+  // truncate via RPC (fast). If RPC missing, fall back to filtered delete.
+  const rpc = await sb().rpc("truncate_ledger");
+  if (rpc.error) {
+    const del = await sb().from(T_LEDGER).delete().gte("entryNo", -9e18);
+    if (del.error) throw del.error;
+  }
+  return appendLedger(entries, onProgress);
+}
+
+export async function appendLedger(
+  entries: LedgerEntry[],
+  onProgress?: (n: number, total: number) => void,
+): Promise<number> {
+  if (!entries.length) return 0;
+  const CHUNK = 500;
+  for (let i = 0; i < entries.length; i += CHUNK) {
+    const slice = entries.slice(i, i + CHUNK);
+    const { error } = await sb().from(T_LEDGER).upsert(slice, { onConflict: "entryNo" });
+    if (error) throw error;
+    onProgress?.(Math.min(i + CHUNK, entries.length), entries.length);
+  }
+  return entries.length;
+}
+
+export async function countLedger(): Promise<number> {
+  const { count, error } = await sb().from(T_LEDGER).select("*", { count: "exact", head: true });
+  if (error) throw error;
+  return count ?? 0;
+}
+
+// ============ STOCK ============
 export async function stockForItem(itemNo: string): Promise<StockSummary> {
-  const item = await db().items.get(itemNo);
-  const entries = await db().ledger.where("itemNo").equals(itemNo).toArray();
+  const [itemR, ledgerR, transfersR] = await Promise.all([
+    sb().from(T_ITEMS).select("*").eq("itemNo", itemNo).maybeSingle(),
+    sb()
+      .from(T_LEDGER)
+      .select("lotNo, expirationDate, locationCode, remainingQuantity, uom")
+      .eq("itemNo", itemNo)
+      .gt("remainingQuantity", 0),
+    sb().from(T_TRANSFERS).select("*"),
+  ]);
+  if (itemR.error) throw itemR.error;
+  if (ledgerR.error) throw ledgerR.error;
+  if (transfersR.error) throw transfersR.error;
+
+  const item = (itemR.data ?? null) as Item | null;
+  const entries = (ledgerR.data ?? []) as Array<{
+    lotNo: string;
+    expirationDate?: string;
+    locationCode: string;
+    remainingQuantity: number;
+    uom?: string;
+  }>;
+  const transfers = (transfersR.data ?? []) as Transfer[];
+
   const map = new Map<string, StockSummary["lots"][number]>();
   for (const e of entries) {
-    if (e.sourceTransferId) continue; // defensive: ignore any app-generated entries
-    if (!e.remainingQuantity || e.remainingQuantity <= 0) continue;
     const key = `${e.lotNo}|${e.locationCode}`;
+    const qty = Number(e.remainingQuantity) || 0;
     const cur = map.get(key);
-    if (cur) {
-      cur.remaining += Number(e.remainingQuantity) || 0;
-    } else {
+    if (cur) cur.remaining += qty;
+    else
       map.set(key, {
         lotNo: e.lotNo,
         expirationDate: e.expirationDate,
         locationCode: e.locationCode,
-        remaining: Number(e.remainingQuantity) || 0,
+        remaining: qty,
         reserved: 0,
-        available: Number(e.remainingQuantity) || 0,
+        available: qty,
         uom: e.uom,
       });
-    }
   }
 
-  // Subtract reservations from every Transfer that is NOT yet applied.
-  // Applied transfers have already been processed by D365 — the new Ledger
-  // upload reflects the move, so reserving again would double-count.
-  const transfers = await db().transfers.toArray();
   for (const t of transfers) {
     if (t.applied) continue;
-    for (const l of t.lines) {
+    for (const l of t.lines ?? []) {
       if (l.itemNo !== itemNo) continue;
       const loc = l.alreadyExp ? "60008-EXP" : "60008";
       const key = `${l.lotNo}|${loc}`;
       const cur = map.get(key);
-      if (cur) {
-        cur.reserved += Number(l.quantity) || 0;
-      } else {
-        // reservation for a lot we don't currently see in the ledger —
-        // still surface it so users notice the inconsistency
+      if (cur) cur.reserved += Number(l.quantity) || 0;
+      else
         map.set(key, {
           lotNo: l.lotNo,
           expirationDate: l.expirationDate,
@@ -110,16 +144,14 @@ export async function stockForItem(itemNo: string): Promise<StockSummary> {
           available: 0,
           uom: l.uom,
         });
-      }
     }
   }
+
   for (const v of map.values()) v.available = v.remaining - v.reserved;
 
-  const lots = Array.from(map.values()).sort((a, b) => {
-    const da = a.expirationDate || "";
-    const db = b.expirationDate || "";
-    return da.localeCompare(db);
-  });
+  const lots = Array.from(map.values()).sort((a, b) =>
+    (a.expirationDate || "").localeCompare(b.expirationDate || ""),
+  );
   return {
     itemNo,
     description: item?.description,
@@ -128,77 +160,39 @@ export async function stockForItem(itemNo: string): Promise<StockSummary> {
   };
 }
 
-export async function upsertItems(items: Item[]) {
-  if (!items.length) return 0;
-  await db().items.bulkPut(items);
-  return items.length;
-}
-
-export async function replaceLedger(entries: LedgerEntry[]) {
-  await db().ledger.clear();
-  // Chunk insert to avoid huge transactions
-  const CHUNK = 5000;
-  for (let i = 0; i < entries.length; i += CHUNK) {
-    await db().ledger.bulkPut(entries.slice(i, i + CHUNK));
-  }
-  return entries.length;
-}
-
-export async function appendLedger(entries: LedgerEntry[]) {
-  const CHUNK = 5000;
-  for (let i = 0; i < entries.length; i += CHUNK) {
-    await db().ledger.bulkPut(entries.slice(i, i + CHUNK));
-  }
-  return entries.length;
-}
-
-// Scan the current Ledger for External Document Numbers that match any
-// closed-not-yet-applied transfer and flip those transfers to applied.
-// Run this after every Ledger upload — it's idempotent.
-export async function markAppliedFromLedger(): Promise<{
-  newlyApplied: number;
-  appliedDocs: string[];
-}> {
-  const docs = new Set<string>();
-  await db().ledger.each((e) => {
-    if (e.sourceTransferId) return; // defensive: ignore any legacy synthetic
-    const d = (e.externalDocNo ?? "").trim();
-    if (d) docs.add(d);
-  });
-
-  const transfers = await db().transfers.toArray();
-  const toUpdate: Transfer[] = [];
-  for (const t of transfers) {
-    if (t.applied) continue;
-    if (!t.closed) continue;
-    const d = (t.externalDocNo ?? "").trim();
-    if (!d) continue;
-    if (docs.has(d)) {
-      toUpdate.push({ ...t, applied: true, appliedAt: new Date().toISOString() });
-    }
-  }
-  if (toUpdate.length) await db().transfers.bulkPut(toUpdate);
-  return {
-    newlyApplied: toUpdate.length,
-    appliedDocs: toUpdate.map((t) => t.externalDocNo!).filter(Boolean),
-  };
-}
-
+// ============ TRANSFERS ============
 export async function saveTransfer(t: Transfer) {
-  await db().transfers.put(t);
+  const { error } = await sb().from(T_TRANSFERS).upsert(t);
+  if (error) throw error;
 }
 
-// Closing a transfer never mutates the Ledger — the reservation is what
-// makes the qty unavailable. Ledger only changes when the exported Excel
-// is imported into Dynamics 365 and the user re-uploads the new Ledger.
-export const EXTERNAL_DOC_PREFIX = "TO08EXP-";
-export const EXTERNAL_DOC_PAD = 4;
+export async function listTransfers(): Promise<Transfer[]> {
+  const { data, error } = await sb()
+    .from(T_TRANSFERS)
+    .select("*")
+    .order("createdAt", { ascending: false });
+  if (error) throw error;
+  return (data ?? []) as Transfer[];
+}
+
+export async function getTransfer(id: string): Promise<Transfer | undefined> {
+  const { data, error } = await sb().from(T_TRANSFERS).select("*").eq("id", id).maybeSingle();
+  if (error) throw error;
+  return (data ?? undefined) as Transfer | undefined;
+}
+
+export async function countTransfers(): Promise<number> {
+  const { count, error } = await sb().from(T_TRANSFERS).select("*", { count: "exact", head: true });
+  if (error) throw error;
+  return count ?? 0;
+}
 
 export async function nextExternalDocNo(): Promise<string> {
-  const all = await db().transfers.toArray();
+  const { data, error } = await sb().from(T_TRANSFERS).select("externalDocNo");
+  if (error) throw error;
   let max = 0;
-  for (const t of all) {
-    const v = (t.externalDocNo ?? "").trim();
+  for (const r of data ?? []) {
+    const v = ((r as any).externalDocNo ?? "").toString().trim();
     if (!v.startsWith(EXTERNAL_DOC_PREFIX)) continue;
     const n = parseInt(v.slice(EXTERNAL_DOC_PREFIX.length), 10);
     if (Number.isFinite(n) && n > max) max = n;
@@ -207,41 +201,91 @@ export async function nextExternalDocNo(): Promise<string> {
 }
 
 export async function closeTransfer(t: Transfer, externalDocNo?: string) {
-  const docNo = (externalDocNo ?? t.externalDocNo ?? "").trim() || (await nextExternalDocNo());
+  const docNo =
+    (externalDocNo ?? t.externalDocNo ?? "").trim() || (await nextExternalDocNo());
   const next: Transfer = {
     ...t,
     externalDocNo: docNo,
     closed: true,
     closedAt: new Date().toISOString(),
   };
-  await db().transfers.put(next);
+  await saveTransfer(next);
   return next;
 }
 
 export async function reopenTransfer(t: Transfer) {
-  // "Cancel document" — unlocks the carton for editing. Reservations stay
-  // because the lines still exist; user can adjust qty or delete lines.
   const next: Transfer = { ...t, closed: false, closedAt: undefined };
-  await db().transfers.put(next);
+  await saveTransfer(next);
   return next;
 }
 
 export async function deleteTransferAndRevert(id: string) {
-  // Deleting a transfer releases all its reservations (handled implicitly
-  // because stockForItem only sums over surviving transfers).
-  await db().transfers.delete(id);
+  const { error } = await sb().from(T_TRANSFERS).delete().eq("id", id);
+  if (error) throw error;
 }
 
-export async function listTransfers(): Promise<Transfer[]> {
-  return await db().transfers.orderBy("createdAt").reverse().toArray();
+// ============ APPLIED RECONCILE ============
+export async function markAppliedFromLedger(): Promise<{
+  newlyApplied: number;
+  appliedDocs: string[];
+}> {
+  // Get distinct externalDocNo seen in Ledger via RPC (fast).
+  let docs = new Set<string>();
+  const r = await sb().rpc("distinct_external_docs");
+  if (!r.error && Array.isArray(r.data)) {
+    for (const v of r.data as string[]) {
+      const d = (v ?? "").toString().trim();
+      if (d) docs.add(d);
+    }
+  } else {
+    // Fallback: pull externalDocNo column and dedupe client-side
+    const { data, error } = await sb()
+      .from(T_LEDGER)
+      .select("externalDocNo")
+      .not("externalDocNo", "is", null);
+    if (error) throw error;
+    for (const row of data ?? []) {
+      const d = ((row as any).externalDocNo ?? "").toString().trim();
+      if (d) docs.add(d);
+    }
+  }
+
+  // Find candidate transfers
+  const { data: candidates, error: e2 } = await sb()
+    .from(T_TRANSFERS)
+    .select("id, externalDocNo, closed, applied")
+    .eq("closed", true)
+    .or("applied.is.null,applied.eq.false");
+  if (e2) throw e2;
+
+  const ids: string[] = [];
+  const doneDocs: string[] = [];
+  for (const t of (candidates ?? []) as Pick<
+    Transfer,
+    "id" | "externalDocNo" | "closed" | "applied"
+  >[]) {
+    const d = (t.externalDocNo ?? "").trim();
+    if (d && docs.has(d)) {
+      ids.push(t.id);
+      doneDocs.push(d);
+    }
+  }
+  if (ids.length) {
+    const { error } = await sb()
+      .from(T_TRANSFERS)
+      .update({ applied: true, appliedAt: new Date().toISOString() })
+      .in("id", ids);
+    if (error) throw error;
+  }
+  return { newlyApplied: ids.length, appliedDocs: doneDocs };
 }
 
-export async function getTransfer(id: string): Promise<Transfer | undefined> {
-  return await db().transfers.get(id);
-}
-
+// ============ CLEAR ALL ============
 export async function clearAll() {
-  await db().items.clear();
-  await db().ledger.clear();
-  await db().transfers.clear();
+  const r1 = await sb().rpc("truncate_items");
+  if (r1.error) await sb().from(T_ITEMS).delete().gte("itemNo", "");
+  const r2 = await sb().rpc("truncate_ledger");
+  if (r2.error) await sb().from(T_LEDGER).delete().gte("entryNo", -9e18);
+  const r3 = await sb().rpc("truncate_transfers");
+  if (r3.error) await sb().from(T_TRANSFERS).delete().gte("id", "");
 }

@@ -74,7 +74,6 @@ export function parseLedger(rows: Record<string, unknown>[]): LedgerEntry[] {
         quantity: toNum(r["Quantity"]),
         remainingQuantity: toNum(r["Remaining Quantity"]),
         uom: toStr(r["Unit of Measure Code"]),
-        sourceTransferId: undefined,
       } as LedgerEntry;
     })
     .filter((x): x is LedgerEntry => !!x);

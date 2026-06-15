@@ -2,6 +2,8 @@
 import dynamic from "next/dynamic";
 import { useState } from "react";
 import { ScanIcon, BoxIcon, UploadIcon, PillIcon } from "@/components/Icons";
+import { SetupBanner } from "@/components/SetupBanner";
+import { isConfigured } from "@/lib/supabase";
 
 const Scan = dynamic(() => import("@/components/Scan").then((m) => m.Scan), { ssr: false });
 const Upload = dynamic(() => import("@/components/Upload").then((m) => m.Upload), { ssr: false });
@@ -17,6 +19,14 @@ const TABS = [
 
 export default function Home() {
   const [tab, setTab] = useState<(typeof TABS)[number]["key"]>("scan");
+
+  if (!isConfigured) {
+    return (
+      <div className="min-h-screen flex items-center justify-center">
+        <SetupBanner />
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-screen">
