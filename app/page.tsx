@@ -3,6 +3,7 @@ import dynamic from "next/dynamic";
 import { useState } from "react";
 import { ScanIcon, BoxIcon, UploadIcon, JournalIcon, PillIcon } from "@/components/Icons";
 import { SetupBanner } from "@/components/SetupBanner";
+import { PasswordGate } from "@/components/PasswordGate";
 import { isConfigured } from "@/lib/supabase";
 
 const Scan = dynamic(() => import("@/components/Scan").then((m) => m.Scan), { ssr: false });
@@ -74,7 +75,11 @@ export default function Home() {
         {tab === "scan" && <Scan />}
         {tab === "transfers" && <Transfers />}
         {tab === "journal" && <Journal />}
-        {tab === "upload" && <Upload />}
+        {tab === "upload" && (
+          <PasswordGate>
+            <Upload />
+          </PasswordGate>
+        )}
       </main>
 
       <footer className="max-w-7xl mx-auto px-4 lg:px-6 py-6 text-xs text-slate-400 no-print">
