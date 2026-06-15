@@ -10,6 +10,27 @@ const T_ITEMS = "items";
 const T_LEDGER = "ledger";
 const T_TRANSFERS = "transfers";
 
+// Wrap a network-bound call with retry + clearer error context.
+// "TypeError: Failed to fetch" usually means: payload too big, network blip,
+// CORS, or wrong project URL. Retrying small chunks fixes the first two.
+async function withRetry<T>(label: string, fn: () => Promise<T>, attempts = 3): Promise<T> {
+  let lastErr: any;
+  for (let i = 0; i < attempts; i++) {
+    try {
+      return await fn();
+    } catch (e: any) {
+      lastErr = e;
+      const transient =
+        e?.name === "TypeError" ||
+        /failed to fetch|network|timeout|fetch/i.test(String(e?.message ?? ""));
+      if (!transient || i === attempts - 1) break;
+      await new Promise((r) => setTimeout(r, 600 * Math.pow(2, i))); // 600ms, 1.2s
+    }
+  }
+  const msg = lastErr?.message ?? String(lastErr);
+  throw new Error(`${label}: ${msg}`);
+}
+
 // ============ ITEMS ============
 export async function findItemByBarcode(barcode: string): Promise<Item | undefined> {
   const code = barcode.trim();
@@ -31,13 +52,19 @@ export async function findItemByBarcode(barcode: string): Promise<Item | undefin
   return (r2.data ?? undefined) as Item | undefined;
 }
 
-export async function upsertItems(items: Item[]): Promise<number> {
+export async function upsertItems(
+  items: Item[],
+  onProgress?: (n: number, total: number) => void,
+): Promise<number> {
   if (!items.length) return 0;
-  const CHUNK = 1000;
+  const CHUNK = 200;
   for (let i = 0; i < items.length; i += CHUNK) {
     const slice = items.slice(i, i + CHUNK);
-    const { error } = await sb().from(T_ITEMS).upsert(slice, { onConflict: "itemNo" });
-    if (error) throw error;
+    await withRetry(`upsert items chunk ${i}-${i + slice.length}`, async () => {
+      const { error } = await sb().from(T_ITEMS).upsert(slice, { onConflict: "itemNo" });
+      if (error) throw new Error(error.message);
+    });
+    onProgress?.(Math.min(i + CHUNK, items.length), items.length);
   }
   return items.length;
 }
@@ -53,12 +80,13 @@ export async function replaceLedger(
   entries: LedgerEntry[],
   onProgress?: (n: number, total: number) => void,
 ): Promise<number> {
-  // truncate via RPC (fast). If RPC missing, fall back to filtered delete.
-  const rpc = await sb().rpc("truncate_ledger");
-  if (rpc.error) {
-    const del = await sb().from(T_LEDGER).delete().gte("entryNo", -9e18);
-    if (del.error) throw del.error;
-  }
+  await withRetry("truncate ledger", async () => {
+    const rpc = await sb().rpc("truncate_ledger");
+    if (rpc.error) {
+      const del = await sb().from(T_LEDGER).delete().gte("entryNo", -9e18);
+      if (del.error) throw new Error(del.error.message);
+    }
+  });
   return appendLedger(entries, onProgress);
 }
 
@@ -67,11 +95,13 @@ export async function appendLedger(
   onProgress?: (n: number, total: number) => void,
 ): Promise<number> {
   if (!entries.length) return 0;
-  const CHUNK = 500;
+  const CHUNK = 200;
   for (let i = 0; i < entries.length; i += CHUNK) {
     const slice = entries.slice(i, i + CHUNK);
-    const { error } = await sb().from(T_LEDGER).upsert(slice, { onConflict: "entryNo" });
-    if (error) throw error;
+    await withRetry(`upsert ledger chunk ${i}-${i + slice.length}`, async () => {
+      const { error } = await sb().from(T_LEDGER).upsert(slice, { onConflict: "entryNo" });
+      if (error) throw new Error(error.message);
+    });
     onProgress?.(Math.min(i + CHUNK, entries.length), entries.length);
   }
   return entries.length;

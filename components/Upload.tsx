@@ -15,6 +15,21 @@ import { UploadIcon, DatabaseIcon, CheckIcon, TrashIcon, AlertIcon } from "./Ico
 
 type Mode = "items" | "ledger-replace" | "ledger-append";
 
+function errMsg(e: any): string {
+  const m = String(e?.message ?? e ?? "Error");
+  if (/failed to fetch/i.test(m)) {
+    return (
+      "อัพโหลดไม่สำเร็จ (Failed to fetch) — เป็นได้ทั้ง 3 สาเหตุ:\n" +
+      "1) NEXT_PUBLIC_SUPABASE_URL พิมพ์ผิด หรือยังไม่ Redeploy หลังตั้ง env vars\n" +
+      "2) ยังไม่ได้รัน supabase-schema.sql (ตารางยังไม่ถูกสร้าง)\n" +
+      "3) เน็ตหลุด — ลองอัพใหม่ ระบบจะ retry chunk ที่ล้มเหลวอัตโนมัติ\n\n" +
+      "Raw: " +
+      m
+    );
+  }
+  return m;
+}
+
 export function Upload() {
   const [busy, setBusy] = useState<Mode | null>(null);
   const [progress, setProgress] = useState<{ n: number; total: number } | null>(null);
@@ -45,16 +60,20 @@ export function Upload() {
   async function handleItems(f: File) {
     setBusy("items");
     setMsg(null);
+    setProgress(null);
     try {
       const wb = await readWorkbook(f);
       const rows = sheetRows(wb);
       const items = parseItemMaster(rows);
-      const n = await upsertItems(items);
+      const reportProgress = (n: number, total: number) => setProgress({ n, total });
+      const n = await upsertItems(items, reportProgress);
+      setProgress(null);
       setMsg({ kind: "ok", text: `อัพเดต Item Master สำเร็จ: ${n.toLocaleString()} รายการ` });
       await refreshCounts();
     } catch (e: any) {
-      setMsg({ kind: "err", text: e?.message ?? "Error" });
+      setMsg({ kind: "err", text: errMsg(e) });
     }
+    setProgress(null);
     setBusy(null);
   }
 
@@ -84,7 +103,7 @@ export function Upload() {
       });
       await refreshCounts();
     } catch (e: any) {
-      setMsg({ kind: "err", text: e?.message ?? "Error" });
+      setMsg({ kind: "err", text: errMsg(e) });
     }
     setProgress(null);
     setBusy(null);
@@ -156,14 +175,24 @@ export function Upload() {
       {/* Message */}
       {msg && (
         <div
-          className={`flex items-center gap-2 px-4 py-2.5 rounded-lg text-sm font-medium border ${
+          className={`flex items-start gap-2 px-4 py-3 rounded-lg text-sm font-medium border whitespace-pre-line ${
             msg.kind === "ok"
               ? "bg-emerald-50 text-emerald-800 border-emerald-200"
               : "bg-rose-50 text-rose-700 border-rose-200"
           }`}
         >
-          <CheckIcon className="w-4 h-4" />
-          {msg.text}
+          {msg.kind === "ok" ? (
+            <CheckIcon className="w-4 h-4 mt-0.5 shrink-0" />
+          ) : (
+            <AlertIcon className="w-4 h-4 mt-0.5 shrink-0" />
+          )}
+          <span className="flex-1">{msg.text}</span>
+          <button
+            onClick={() => setMsg(null)}
+            className="text-xs opacity-60 hover:opacity-100"
+          >
+            ✕
+          </button>
         </div>
       )}
 
