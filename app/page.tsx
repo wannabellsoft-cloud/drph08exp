@@ -4,6 +4,7 @@ import { useState } from "react";
 import { ScanIcon, BoxIcon, UploadIcon, JournalIcon, PillIcon } from "@/components/Icons";
 import { SetupBanner } from "@/components/SetupBanner";
 import { PasswordGate } from "@/components/PasswordGate";
+import { UIProvider } from "@/components/UI";
 import { isConfigured } from "@/lib/supabase";
 
 const Scan = dynamic(() => import("@/components/Scan").then((m) => m.Scan), { ssr: false });
@@ -34,6 +35,7 @@ export default function Home() {
   }
 
   return (
+    <UIProvider>
     <div className="min-h-screen">
       <header className="sticky top-0 z-20 bg-white/80 backdrop-blur-md border-b border-slate-200/80 no-print">
         <div className="max-w-7xl mx-auto px-4 lg:px-6 py-3 flex items-center gap-4">
@@ -86,5 +88,6 @@ export default function Home() {
         ข้อมูลเก็บใน Supabase Cloud — ทุกเครื่องที่เปิด URL เดียวกันเห็นข้อมูลเดียวกัน · Export Excel เพื่อนำไป Import เข้า Microsoft Dynamics 365
       </footer>
     </div>
+    </UIProvider>
   );
 }

@@ -14,6 +14,7 @@ import {
   countJournal,
 } from "@/lib/db";
 import { UploadIcon, DatabaseIcon, CheckIcon, TrashIcon, AlertIcon } from "./Icons";
+import { useUI } from "./UI";
 
 type Mode = "items" | "ledger-replace" | "ledger-append";
 
@@ -33,6 +34,7 @@ function errMsg(e: any): string {
 }
 
 export function Upload() {
+  const ui = useUI();
   const [busy, setBusy] = useState<Mode | null>(null);
   const [progress, setProgress] = useState<{ n: number; total: number } | null>(null);
   const [msg, setMsg] = useState<{ kind: "ok" | "err"; text: string } | null>(null);
@@ -257,10 +259,17 @@ export function Upload() {
           <button
             className="px-3 py-1.5 bg-rose-600 text-white text-sm font-medium rounded-lg hover:bg-rose-700 transition"
             onClick={async () => {
-              if (!confirm("ยืนยันลบข้อมูลทั้งหมด?")) return;
+              const yes = await ui.confirm({
+                title: "ลบข้อมูลทั้งหมด?",
+                message:
+                  "Item Master, Ledger และ Transfer ทั้งหมดจะถูกลบจาก Supabase\nการกระทำนี้ย้อนกลับไม่ได้",
+                danger: true,
+                confirmText: "ลบทั้งหมด",
+              });
+              if (!yes) return;
               await clearAll();
               await refreshCounts();
-              setMsg({ kind: "ok", text: "ล้างข้อมูลแล้ว" });
+              ui.ok("ล้างข้อมูลแล้ว");
             }}
           >
             ล้างทั้งหมด

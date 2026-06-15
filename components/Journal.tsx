@@ -7,6 +7,7 @@ import {
 } from "@/lib/db";
 import { exportJournalToBC, downloadBlob } from "@/lib/excel";
 import type { ItemJournalEntry } from "@/lib/types";
+import { useUI } from "./UI";
 import {
   DownloadIcon,
   LockIcon,
@@ -17,6 +18,7 @@ import {
 } from "./Icons";
 
 export function Journal() {
+  const ui = useUI();
   const [entries, setEntries] = useState<ItemJournalEntry[]>([]);
   const [filter, setFilter] = useState<"pending" | "exported" | "applied" | "all">("pending");
   const [q, setQ] = useState("");
@@ -54,28 +56,33 @@ export function Journal() {
 
   async function unexport(e: ItemJournalEntry) {
     if (e.applied) {
-      alert("Applied แล้ว — ยกเลิกไม่ได้");
+      ui.warn("Applied แล้ว", "ยกเลิกไม่ได้ — D365 จัดการแล้ว");
       return;
     }
-    if (!confirm("ยกเลิก Export รายการนี้?")) return;
+    const yes = await ui.confirm({
+      title: "ยกเลิก Export รายการนี้?",
+      message: "รายการจะกลับไปสถานะ 'รอ Export' และแก้ไขได้อีกครั้ง",
+      confirmText: "ยกเลิก Export",
+    });
+    if (!yes) return;
     await unexportJournal(e.id);
     await refresh();
   }
 
   async function exportAll() {
     if (filtered.length === 0) {
-      alert("ไม่มีรายการให้ export");
+      ui.warn("ไม่มีรายการให้ export");
       return;
     }
     const exportable = filtered.filter((e) => !e.applied);
     if (exportable.length === 0) {
-      alert("รายการที่กรองเป็น Applied ทั้งหมด — D365 มีอยู่แล้ว");
+      ui.info("ทุกรายการ Applied แล้ว", "D365 มีอยู่แล้ว ไม่ต้อง import อีก");
       return;
     }
     const today = new Date().toISOString().slice(0, 10);
     const { blob, included, skipped } = exportJournalToBC(exportable, today);
     if (included === 0) {
-      alert("ไม่มีรายการที่ export ได้");
+      ui.warn("ไม่มีรายการที่ export ได้", "ตรวจสอบ Doc No. / LOT / Quantity");
       return;
     }
     downloadBlob(blob, `ItemJournal-LOT60008-${today}.xlsx`);
@@ -85,13 +92,12 @@ export function Journal() {
       await refresh();
     }
     if (skipped > 0) {
-      setTimeout(
-        () =>
-          alert(
-            `Export สำเร็จ\n• รวมในไฟล์: ${included} รายการ\n• ข้าม: ${skipped} รายการ`,
-          ),
-        100,
+      ui.info(
+        "Export สำเร็จ",
+        `รวมในไฟล์ ${included} รายการ • ข้าม ${skipped} รายการ`,
       );
+    } else {
+      ui.ok("Export สำเร็จ", `รวมในไฟล์ ${included} รายการ`);
     }
   }
 

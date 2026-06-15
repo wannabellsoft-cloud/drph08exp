@@ -9,6 +9,7 @@ import {
 } from "@/lib/db";
 import { exportTransferToBC, exportTransfersToBC, downloadBlob } from "@/lib/excel";
 import type { Transfer } from "@/lib/types";
+import { useUI } from "./UI";
 import {
   PrintIcon,
   DownloadIcon,
@@ -21,6 +22,7 @@ import {
 } from "./Icons";
 
 export function Transfers() {
+  const ui = useUI();
   const [items, setItems] = useState<Transfer[]>([]);
   const [printing, setPrinting] = useState<Transfer | null>(null);
   const [filter, setFilter] = useState<"all" | "open" | "closed" | "applied">("all");
@@ -63,10 +65,15 @@ export function Transfers() {
 
   async function editDocNo(t: Transfer) {
     if (t.closed) {
-      alert("ลังนี้ปิดแล้ว — กดยกเลิกเอกสารก่อนแก้ไข");
+      ui.warn("ลังนี้ปิดแล้ว", "กดยกเลิกเอกสารก่อนแก้ไข");
       return;
     }
-    const v = prompt("External Document No.", t.externalDocNo ?? "");
+    const v = await ui.prompt({
+      title: "External Document No.",
+      defaultValue: t.externalDocNo ?? "",
+      placeholder: "TO08EXP-0001",
+      mono: true,
+    });
     if (v === null) return;
     await saveTransfer({ ...t, externalDocNo: v.trim() });
     await refresh();
@@ -74,36 +81,44 @@ export function Transfers() {
 
   async function reopen(t: Transfer) {
     if (t.applied) {
-      alert(
-        "ลังนี้ถูก Apply โดย D365 แล้ว (Ledger ใหม่ยืนยันการโอน)\nหากจะแก้กลับ ต้องไปยกเลิก TO ใน D365 และอัพโหลด Ledger ที่ไม่มี External Doc นี้ก่อน",
-      );
+      await ui.showInfo({
+        title: "ลังนี้ถูก Apply แล้ว",
+        message:
+          "D365 ยืนยันการโอนผ่าน Ledger ใหม่แล้ว\nหากจะแก้กลับ ต้องไปยกเลิก TO ใน D365 และอัพโหลด Ledger ที่ไม่มี External Doc นี้ก่อน",
+        tone: "warn",
+      });
       return;
     }
-    if (
-      !confirm(
-        "ยกเลิกเอกสารเพื่อกลับมาแก้ไข?\nลังจะถูกปลดล็อกเพื่อเพิ่ม/ลด/ลบ line ได้ใหม่",
-      )
-    )
-      return;
+    const yes = await ui.confirm({
+      title: "ยกเลิกเอกสารเพื่อกลับมาแก้ไข?",
+      message: "ลังจะถูกปลดล็อกเพื่อเพิ่ม/ลด/ลบ line ได้ใหม่",
+      confirmText: "ยกเลิกเอกสาร",
+    });
+    if (!yes) return;
     await reopenTransfer(t);
     await refresh();
   }
 
   async function close(t: Transfer) {
     if (t.lines.length === 0) {
-      alert("ลังยังไม่มีรายการ");
+      ui.warn("ลังยังไม่มีรายการ");
       return;
     }
     const next = await closeTransfer(t);
     await refresh();
-    alert(`ปิดลังเรียบร้อย — ${next.externalDocNo}`);
+    ui.ok("ปิดลังเรียบร้อย", next.externalDocNo);
   }
 
   async function remove(t: Transfer) {
-    const msg = t.applied
-      ? "ลบประวัติลังนี้?\nลังนี้ถูก Apply โดย D365 แล้ว — การลบจะลบเฉพาะ record ในแอป (ไม่กระทบ Ledger)"
-      : "ลบลังนี้?\nยอดที่จองไว้จะถูกคืนกลับเป็น available ใน lot นั้น";
-    if (!confirm(msg)) return;
+    const yes = await ui.confirm({
+      title: t.applied ? "ลบประวัติลังนี้?" : "ลบลังนี้?",
+      message: t.applied
+        ? "ลังนี้ถูก Apply โดย D365 แล้ว — การลบจะลบเฉพาะ record ในแอป (ไม่กระทบ Ledger)"
+        : "ยอดที่จองไว้จะถูกคืนกลับเป็น available ใน lot นั้น",
+      danger: true,
+      confirmText: "ลบ",
+    });
+    if (!yes) return;
     await deleteTransferAndRevert(t.id);
     await refresh();
   }
@@ -115,35 +130,38 @@ export function Transfers() {
 
   function exportBC(t: Transfer) {
     if (!t.externalDocNo) {
-      alert("ลังนี้ยังไม่มี External Document No. — กดปิดลังก่อน");
+      ui.warn("ยังไม่มี External Document No.", "กดปิดลังก่อน export");
       return;
     }
     const blob = exportTransferToBC(t);
     downloadBlob(blob, `${t.externalDocNo || t.id}.xlsx`);
+    ui.ok("Export Excel สำเร็จ", t.externalDocNo);
   }
 
-  function exportAll() {
+  async function exportAll() {
     if (filtered.length === 0) {
-      alert("ไม่มีลังให้ export");
+      ui.warn("ไม่มีลังให้ export");
       return;
     }
     const { blob, included, skipped } = exportTransfersToBC(filtered);
     if (included === 0) {
-      alert(
-        "ไม่มีลังที่ export ได้ในรายการที่กรอง\n— ลังต้องมี External Doc No. และมี line ที่ต้องโอน (ไม่ใช่ Ref ล้วน)",
-      );
+      await ui.showInfo({
+        title: "ไม่มีลังที่ export ได้",
+        message:
+          "ในรายการที่กรองอยู่ ลังต้องมี External Doc No. และมี line ที่ต้องโอน (ไม่ใช่ Ref ล้วน)",
+        tone: "warn",
+      });
       return;
     }
     const today = new Date().toISOString().slice(0, 10);
     downloadBlob(blob, `TO08EXP-batch-${today}.xlsx`);
     if (skipped > 0) {
-      setTimeout(
-        () =>
-          alert(
-            `Export Excel สำเร็จ\n• รวมในไฟล์: ${included} ลัง\n• ข้าม: ${skipped} ลัง (ไม่มี External Doc No. หรือไม่มีรายการต้องโอน)`,
-          ),
-        100,
+      ui.info(
+        "Export Excel สำเร็จ",
+        `รวมในไฟล์ ${included} ลัง • ข้าม ${skipped} ลัง (ไม่มี External Doc No. หรือไม่มีรายการต้องโอน)`,
       );
+    } else {
+      ui.ok("Export Excel สำเร็จ", `รวมในไฟล์ ${included} ลัง`);
     }
   }
 
