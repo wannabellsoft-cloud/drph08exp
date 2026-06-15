@@ -1,6 +1,12 @@
 "use client";
 import { useEffect, useState } from "react";
-import { listTransfers, getTransfer, saveTransfer, deleteTransfer } from "@/lib/db";
+import {
+  listTransfers,
+  saveTransfer,
+  closeTransfer,
+  reopenTransfer,
+  deleteTransferAndRevert,
+} from "@/lib/db";
 import { exportTransferToBC, downloadBlob } from "@/lib/excel";
 import type { Transfer } from "@/lib/types";
 
@@ -23,17 +29,25 @@ export function Transfers() {
   }
 
   async function reopen(t: Transfer) {
-    if (!confirm("เปิดลังนี้กลับมาแก้ไข?")) return;
-    await saveTransfer({ ...t, closed: false, closedAt: undefined });
+    if (!confirm("เปิดลังนี้กลับมาแก้ไข?\nระบบจะคืนยอด Ledger ที่หักไว้กลับมาเหมือนเดิม")) return;
+    await reopenTransfer(t);
     await refresh();
   }
   async function close(t: Transfer) {
-    await saveTransfer({ ...t, closed: true, closedAt: new Date().toISOString() });
+    const docNo = prompt(
+      "ระบุ External Document No. ก่อนปิดลัง:",
+      t.externalDocNo ?? ""
+    );
+    if (docNo === null) return;
+    await closeTransfer(t, docNo);
     await refresh();
   }
   async function remove(t: Transfer) {
-    if (!confirm("ลบลังนี้?")) return;
-    await deleteTransfer(t.id);
+    const msg = t.closed
+      ? "ลบลังนี้?\nยอด Ledger ที่หักไว้จะถูกคืนกลับ"
+      : "ลบลังนี้?";
+    if (!confirm(msg)) return;
+    await deleteTransferAndRevert(t.id);
     await refresh();
   }
 

@@ -1,6 +1,12 @@
 "use client";
 import { useEffect, useRef, useState } from "react";
-import { findItemByBarcode, stockForItem, saveTransfer, getTransfer } from "@/lib/db";
+import {
+  findItemByBarcode,
+  stockForItem,
+  saveTransfer,
+  getTransfer,
+  closeTransfer,
+} from "@/lib/db";
 import type { StockSummary, Transfer, TransferLine } from "@/lib/types";
 
 const LOC_ON_HAND = "60008";
@@ -119,16 +125,12 @@ export function Scan() {
       carton.externalDocNo ?? ""
     );
     if (docNo === null) return;
-    const next: Transfer = {
-      ...carton,
-      externalDocNo: docNo.trim(),
-      closed: true,
-      closedAt: new Date().toISOString(),
-    };
-    await saveTransfer(next);
+    const next = await closeTransfer(carton, docNo);
     localStorage.removeItem(CURRENT_CARTON_KEY);
     setCarton(null);
-    alert(`ปิดลังเรียบร้อย: ${next.externalDocNo || next.id}\nไปที่แท็บ "Transfers" เพื่อพิมพ์ใบปะหน้า/Export Excel`);
+    alert(
+      `ปิดลังเรียบร้อย: ${next.externalDocNo || next.id}\nยอดคงเหลือใน Ledger ถูกปรับ (60008 ↓, 60008-EXP ↑)\nไปที่แท็บ "Transfers" เพื่อพิมพ์ใบปะหน้า/Export Excel`
+    );
   }
 
   function onKey(e: React.KeyboardEvent<HTMLInputElement>) {

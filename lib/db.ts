@@ -2,6 +2,10 @@
 import Dexie, { Table } from "dexie";
 import type { Item, LedgerEntry, Transfer, StockSummary } from "./types";
 
+const LOC_ON_HAND = "60008";
+const LOC_EXP = "60008-EXP";
+const SYNTH_BASE = 9e14;
+
 export class AppDB extends Dexie {
   items!: Table<Item, string>;
   ledger!: Table<LedgerEntry, number>;
@@ -13,6 +17,12 @@ export class AppDB extends Dexie {
       items: "itemNo, barcode, description",
       ledger:
         "entryNo, itemNo, locationCode, lotNo, [itemNo+locationCode], [itemNo+lotNo+locationCode]",
+      transfers: "id, externalDocNo, closed, createdAt",
+    });
+    this.version(2).stores({
+      items: "itemNo, barcode, description",
+      ledger:
+        "entryNo, itemNo, locationCode, lotNo, sourceTransferId, [itemNo+locationCode], [itemNo+lotNo+locationCode]",
       transfers: "id, externalDocNo, closed, createdAt",
     });
   }
@@ -99,16 +109,88 @@ export async function saveTransfer(t: Transfer) {
   await db().transfers.put(t);
 }
 
+// Synthetic ledger entries produced by closing a transfer in this app.
+// They are reverted when the transfer is reopened or deleted.
+async function buildSyntheticEntries(t: Transfer): Promise<LedgerEntry[]> {
+  const movers = t.lines.filter((l) => !l.alreadyExp && l.quantity > 0);
+  const now = Date.now();
+  const postingDate = new Date().toISOString().slice(0, 10);
+  const entries: LedgerEntry[] = [];
+  movers.forEach((l, i) => {
+    const base = SYNTH_BASE + now + i * 2;
+    entries.push({
+      entryNo: base,
+      postingDate,
+      entryType: "Transfer (app)",
+      documentNo: t.id,
+      externalDocNo: t.externalDocNo,
+      itemNo: l.itemNo,
+      description: l.description,
+      lotNo: l.lotNo,
+      expirationDate: l.expirationDate,
+      locationCode: LOC_ON_HAND,
+      quantity: -l.quantity,
+      remainingQuantity: -l.quantity,
+      uom: l.uom,
+      sourceTransferId: t.id,
+    });
+    entries.push({
+      entryNo: base + 1,
+      postingDate,
+      entryType: "Transfer (app)",
+      documentNo: t.id,
+      externalDocNo: t.externalDocNo,
+      itemNo: l.itemNo,
+      description: l.description,
+      lotNo: l.lotNo,
+      expirationDate: l.expirationDate,
+      locationCode: LOC_EXP,
+      quantity: l.quantity,
+      remainingQuantity: l.quantity,
+      uom: l.uom,
+      sourceTransferId: t.id,
+    });
+  });
+  return entries;
+}
+
+async function revertSyntheticEntries(transferId: string) {
+  await db().ledger.where("sourceTransferId").equals(transferId).delete();
+}
+
+export async function closeTransfer(t: Transfer, externalDocNo: string) {
+  // Always revert any prior synthetic entries for this transfer first, then re-apply
+  await revertSyntheticEntries(t.id);
+  const next: Transfer = {
+    ...t,
+    externalDocNo: externalDocNo.trim() || t.externalDocNo,
+    closed: true,
+    closedAt: new Date().toISOString(),
+  };
+  const entries = await buildSyntheticEntries(next);
+  if (entries.length) await db().ledger.bulkPut(entries);
+  await db().transfers.put(next);
+  return next;
+}
+
+export async function reopenTransfer(t: Transfer) {
+  await revertSyntheticEntries(t.id);
+  const next: Transfer = { ...t, closed: false, closedAt: undefined };
+  await db().transfers.put(next);
+  return next;
+}
+
+export async function deleteTransferAndRevert(id: string) {
+  await revertSyntheticEntries(id);
+  await db().transfers.delete(id);
+}
+
 export async function listTransfers(): Promise<Transfer[]> {
   return await db().transfers.orderBy("createdAt").reverse().toArray();
 }
 
 export async function getTransfer(id: string): Promise<Transfer | undefined> {
   return await db().transfers.get(id);
-}
-
-export async function deleteTransfer(id: string) {
-  await db().transfers.delete(id);
 }
 
 export async function clearAll() {
