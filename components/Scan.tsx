@@ -74,10 +74,15 @@ export function Scan() {
       return;
     }
     if (carton.closed) {
-      alert("ลังนี้ปิดแล้ว สร้างลังใหม่");
+      alert("ลังนี้ปิดแล้ว — กดยกเลิกเอกสารใน Transfers ก่อนแก้ไข");
       return;
     }
-    const qty = Math.max(1, Math.min(lot.remaining, wantQty ?? qtyDraft[lotKey] ?? lot.remaining));
+    if (lot.available <= 0) {
+      alert("ยอดที่ใช้ได้ของ lot นี้เป็น 0 (ถูกจองในลังอื่นแล้ว)");
+      return;
+    }
+    const want = wantQty ?? qtyDraft[lotKey] ?? lot.available;
+    const qty = Math.max(1, Math.min(lot.available, want));
     const line: TransferLine = {
       itemNo: stock!.itemNo,
       description: stock!.description,
@@ -100,22 +105,27 @@ export function Scan() {
     const next = { ...carton, lines };
     await saveTransfer(next);
     setCarton(next);
+    // refresh available so the on-screen number reflects the new reservation
+    const s = await stockForItem(stock!.itemNo);
+    setStock(s);
   }
 
   async function removeLine(idx: number) {
-    if (!carton) return;
+    if (!carton || carton.closed) return;
     const lines = carton.lines.filter((_, i) => i !== idx);
     const next = { ...carton, lines };
     await saveTransfer(next);
     setCarton(next);
+    if (stock) setStock(await stockForItem(stock.itemNo));
   }
 
   async function updateLineQty(idx: number, q: number) {
-    if (!carton) return;
+    if (!carton || carton.closed) return;
     const lines = carton.lines.map((l, i) => (i === idx ? { ...l, quantity: Math.max(0, q) } : l));
     const next = { ...carton, lines };
     await saveTransfer(next);
     setCarton(next);
+    if (stock) setStock(await stockForItem(stock.itemNo));
   }
 
   async function closeCarton() {
@@ -321,6 +331,7 @@ function LotTable(props: {
               <th className="text-left font-normal">Lot</th>
               <th className="text-left font-normal">Exp</th>
               <th className="text-right font-normal">คงเหลือ</th>
+              <th className="text-right font-normal">ใช้ได้</th>
               <th></th>
               <th></th>
             </tr>
@@ -328,30 +339,46 @@ function LotTable(props: {
           <tbody>
             {props.lots.map((l) => {
               const k = `${l.lotNo}|${l.locationCode}`;
+              const reservedNote = l.reserved > 0 ? ` (จอง ${l.reserved})` : "";
+              const noAvail = l.available <= 0;
               return (
                 <tr key={k} className="border-t border-slate-100">
                   <td className="py-1 font-mono">{l.lotNo}</td>
                   <td className="py-1">{l.expirationDate || "-"}</td>
-                  <td className="py-1 text-right font-semibold">{l.remaining}</td>
+                  <td className="py-1 text-right text-slate-500">{l.remaining}</td>
+                  <td
+                    className={`py-1 text-right font-semibold ${
+                      noAvail ? "text-rose-500" : "text-slate-900"
+                    }`}
+                    title={reservedNote}
+                  >
+                    {l.available}
+                    {l.reserved > 0 && (
+                      <span className="text-[10px] text-slate-400 ml-1">
+                        /{l.remaining}
+                      </span>
+                    )}
+                  </td>
                   <td className="py-1">
                     <input
                       type="number"
                       min={1}
-                      max={l.remaining}
-                      defaultValue={l.remaining}
+                      max={l.available}
+                      defaultValue={l.available > 0 ? l.available : 0}
+                      disabled={noAvail || props.disabled}
                       onChange={(e) =>
                         props.setQtyDraft({
                           ...props.qtyDraft,
                           [k]: parseInt(e.target.value || "0", 10),
                         })
                       }
-                      className="w-14 text-right border border-slate-300 rounded px-1"
+                      className="w-14 text-right border border-slate-300 rounded px-1 disabled:bg-slate-100"
                     />
                   </td>
                   <td className="py-1">
                     <button
                       onClick={() => props.onAdd(k, l)}
-                      disabled={props.disabled}
+                      disabled={props.disabled || noAvail}
                       className="px-2 py-0.5 text-xs bg-slate-800 text-white rounded hover:bg-slate-700 disabled:opacity-40"
                     >
                       {props.actionLabel}

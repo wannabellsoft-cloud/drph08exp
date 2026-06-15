@@ -22,6 +22,10 @@ export function Transfers() {
   }, []);
 
   async function editDocNo(t: Transfer) {
+    if (t.closed) {
+      alert("ลังนี้ปิดแล้ว — กดยกเลิกเอกสารก่อนแก้ไข");
+      return;
+    }
     const v = prompt("External Document No.", t.externalDocNo ?? "");
     if (v === null) return;
     await saveTransfer({ ...t, externalDocNo: v.trim() });
@@ -29,7 +33,12 @@ export function Transfers() {
   }
 
   async function reopen(t: Transfer) {
-    if (!confirm("เปิดลังนี้กลับมาแก้ไข?\nระบบจะคืนยอด Ledger ที่หักไว้กลับมาเหมือนเดิม")) return;
+    if (
+      !confirm(
+        "ยกเลิกเอกสารเพื่อกลับมาแก้ไข?\nลังจะถูกปลดล็อกเพื่อเพิ่ม/ลด/ลบ line ได้ใหม่"
+      )
+    )
+      return;
     await reopenTransfer(t);
     await refresh();
   }
@@ -44,8 +53,8 @@ export function Transfers() {
   }
   async function remove(t: Transfer) {
     const msg = t.closed
-      ? "ลบลังนี้?\nยอด Ledger ที่หักไว้จะถูกคืนกลับ"
-      : "ลบลังนี้?";
+      ? "ลบลังนี้?\nยอดที่จองไว้จะถูกคืนกลับเป็น available ใน lot นั้น"
+      : "ลบลังนี้?\nยอดที่จองไว้จะถูกคืนกลับเป็น available ใน lot นั้น";
     if (!confirm(msg)) return;
     await deleteTransferAndRevert(t.id);
     await refresh();
@@ -136,7 +145,7 @@ export function Transfers() {
                             onClick={() => reopen(t)}
                             className="px-2 py-1 text-xs text-amber-700 hover:underline"
                           >
-                            เปิดแก้
+                            ยกเลิกเอกสาร
                           </button>
                         ) : (
                           <button

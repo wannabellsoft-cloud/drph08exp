@@ -58,7 +58,9 @@ export type StockSummary = {
     lotNo: string;
     expirationDate?: string;
     locationCode: string;
-    remaining: number;
+    remaining: number;       // raw from Ledger
+    reserved: number;        // sum of qty held in any Transfer (open or closed)
+    available: number;       // remaining - reserved
     uom?: string;
   }>;
 };
