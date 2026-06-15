@@ -150,10 +150,26 @@ export async function saveTransfer(t: Transfer) {
 // Closing a transfer never mutates the Ledger — the reservation is what
 // makes the qty unavailable. Ledger only changes when the exported Excel
 // is imported into Dynamics 365 and the user re-uploads the new Ledger.
-export async function closeTransfer(t: Transfer, externalDocNo: string) {
+export const EXTERNAL_DOC_PREFIX = "TO08EXP-";
+export const EXTERNAL_DOC_PAD = 4;
+
+export async function nextExternalDocNo(): Promise<string> {
+  const all = await db().transfers.toArray();
+  let max = 0;
+  for (const t of all) {
+    const v = (t.externalDocNo ?? "").trim();
+    if (!v.startsWith(EXTERNAL_DOC_PREFIX)) continue;
+    const n = parseInt(v.slice(EXTERNAL_DOC_PREFIX.length), 10);
+    if (Number.isFinite(n) && n > max) max = n;
+  }
+  return `${EXTERNAL_DOC_PREFIX}${String(max + 1).padStart(EXTERNAL_DOC_PAD, "0")}`;
+}
+
+export async function closeTransfer(t: Transfer, externalDocNo?: string) {
+  const docNo = (externalDocNo ?? t.externalDocNo ?? "").trim() || (await nextExternalDocNo());
   const next: Transfer = {
     ...t,
-    externalDocNo: externalDocNo.trim() || t.externalDocNo,
+    externalDocNo: docNo,
     closed: true,
     closedAt: new Date().toISOString(),
   };

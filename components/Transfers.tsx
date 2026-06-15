@@ -1,5 +1,5 @@
 "use client";
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   listTransfers,
   saveTransfer,
@@ -9,10 +9,22 @@ import {
 } from "@/lib/db";
 import { exportTransferToBC, downloadBlob } from "@/lib/excel";
 import type { Transfer } from "@/lib/types";
+import {
+  PrintIcon,
+  DownloadIcon,
+  TrashIcon,
+  LockIcon,
+  UnlockIcon,
+  BoxIcon,
+  CheckIcon,
+  AlertIcon,
+} from "./Icons";
 
 export function Transfers() {
   const [items, setItems] = useState<Transfer[]>([]);
   const [printing, setPrinting] = useState<Transfer | null>(null);
+  const [filter, setFilter] = useState<"all" | "open" | "closed">("all");
+  const [q, setQ] = useState("");
 
   async function refresh() {
     setItems(await listTransfers());
@@ -20,6 +32,30 @@ export function Transfers() {
   useEffect(() => {
     refresh();
   }, []);
+
+  const filtered = useMemo(() => {
+    return items.filter((t) => {
+      if (filter === "open" && t.closed) return false;
+      if (filter === "closed" && !t.closed) return false;
+      if (q) {
+        const s = q.toLowerCase();
+        const hay = `${t.externalDocNo ?? ""} ${t.id}`.toLowerCase();
+        if (!hay.includes(s)) return false;
+      }
+      return true;
+    });
+  }, [items, filter, q]);
+
+  const stats = useMemo(() => {
+    const open = items.filter((t) => !t.closed).length;
+    const closed = items.filter((t) => t.closed).length;
+    const lines = items.reduce((a, t) => a + t.lines.length, 0);
+    const moveQty = items.reduce(
+      (a, t) => a + t.lines.filter((l) => !l.alreadyExp).reduce((s, l) => s + l.quantity, 0),
+      0,
+    );
+    return { total: items.length, open, closed, lines, moveQty };
+  }, [items]);
 
   async function editDocNo(t: Transfer) {
     if (t.closed) {
@@ -35,27 +71,31 @@ export function Transfers() {
   async function reopen(t: Transfer) {
     if (
       !confirm(
-        "ยกเลิกเอกสารเพื่อกลับมาแก้ไข?\nลังจะถูกปลดล็อกเพื่อเพิ่ม/ลด/ลบ line ได้ใหม่"
+        "ยกเลิกเอกสารเพื่อกลับมาแก้ไข?\nลังจะถูกปลดล็อกเพื่อเพิ่ม/ลด/ลบ line ได้ใหม่",
       )
     )
       return;
     await reopenTransfer(t);
     await refresh();
   }
+
   async function close(t: Transfer) {
-    const docNo = prompt(
-      "ระบุ External Document No. ก่อนปิดลัง:",
-      t.externalDocNo ?? ""
-    );
-    if (docNo === null) return;
-    await closeTransfer(t, docNo);
+    if (t.lines.length === 0) {
+      alert("ลังยังไม่มีรายการ");
+      return;
+    }
+    const next = await closeTransfer(t);
     await refresh();
+    alert(`ปิดลังเรียบร้อย — ${next.externalDocNo}`);
   }
+
   async function remove(t: Transfer) {
-    const msg = t.closed
-      ? "ลบลังนี้?\nยอดที่จองไว้จะถูกคืนกลับเป็น available ใน lot นั้น"
-      : "ลบลังนี้?\nยอดที่จองไว้จะถูกคืนกลับเป็น available ใน lot นั้น";
-    if (!confirm(msg)) return;
+    if (
+      !confirm(
+        "ลบลังนี้?\nยอดที่จองไว้จะถูกคืนกลับเป็น available ใน lot นั้น",
+      )
+    )
+      return;
     await deleteTransferAndRevert(t.id);
     await refresh();
   }
@@ -67,7 +107,7 @@ export function Transfers() {
 
   function exportBC(t: Transfer) {
     if (!t.externalDocNo) {
-      alert("กรุณาระบุ External Document No. ก่อน Export");
+      alert("ลังนี้ยังไม่มี External Document No. — กดปิดลังก่อน");
       return;
     }
     const blob = exportTransferToBC(t);
@@ -75,104 +115,214 @@ export function Transfers() {
   }
 
   return (
-    <div>
-      <div className="bg-white rounded-lg border border-slate-200 overflow-hidden no-print">
-        <table className="w-full text-sm">
-          <thead className="bg-slate-50 text-slate-600">
-            <tr>
-              <th className="text-left p-2">วันที่</th>
-              <th className="text-left p-2">External Doc</th>
-              <th className="text-left p-2">เส้นทาง</th>
-              <th className="text-right p-2">โอน</th>
-              <th className="text-right p-2">โอนแล้ว (ref)</th>
-              <th className="text-center p-2">สถานะ</th>
-              <th></th>
-            </tr>
-          </thead>
-          <tbody>
-            {items.length === 0 ? (
-              <tr>
-                <td colSpan={7} className="p-6 text-center text-slate-400">
-                  ยังไม่มีลังที่สร้างไว้
-                </td>
+    <div className="space-y-5">
+      {/* Stats */}
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-3 no-print">
+        <StatCard label="ทั้งหมด" value={stats.total} tone="slate" />
+        <StatCard label="เปิดอยู่" value={stats.open} tone="amber" />
+        <StatCard label="ปิดแล้ว" value={stats.closed} tone="emerald" />
+        <StatCard label="ยอดที่ต้องโอนรวม" value={stats.moveQty} tone="indigo" />
+      </div>
+
+      {/* Toolbar */}
+      <div className="flex flex-wrap items-center gap-2 no-print">
+        <div className="flex bg-slate-100 p-1 rounded-lg">
+          {(["all", "open", "closed"] as const).map((k) => {
+            const labels = { all: "ทั้งหมด", open: "เปิดอยู่", closed: "ปิดแล้ว" };
+            const on = filter === k;
+            return (
+              <button
+                key={k}
+                onClick={() => setFilter(k)}
+                className={`px-3 py-1 text-xs font-medium rounded-md transition ${
+                  on ? "bg-white shadow-sm text-slate-900" : "text-slate-500 hover:text-slate-700"
+                }`}
+              >
+                {labels[k]}
+              </button>
+            );
+          })}
+        </div>
+        <input
+          value={q}
+          onChange={(e) => setQ(e.target.value)}
+          placeholder="ค้นหา External Doc No. หรือ Carton ID"
+          className="flex-1 min-w-[200px] px-3 py-1.5 text-sm border border-slate-200 rounded-lg focus:outline-none focus:border-emerald-400 focus:ring-2 focus:ring-emerald-100"
+        />
+      </div>
+
+      {/* List */}
+      <div className="bg-white rounded-2xl border border-slate-200/70 overflow-hidden shadow-[0_1px_2px_rgba(15,23,42,0.04)] no-print">
+        {filtered.length === 0 ? (
+          <div className="p-12 text-center">
+            <BoxIcon className="w-10 h-10 mx-auto text-slate-300" />
+            <div className="text-sm text-slate-400 mt-2">
+              {items.length === 0 ? "ยังไม่มีลังที่สร้างไว้" : "ไม่มีลังที่ตรงกับเงื่อนไข"}
+            </div>
+          </div>
+        ) : (
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="bg-slate-50 text-slate-500 text-xs">
+                <th className="text-left px-4 py-2.5 font-medium">วันที่</th>
+                <th className="text-left px-4 py-2.5 font-medium">External Doc</th>
+                <th className="text-left px-4 py-2.5 font-medium">เส้นทาง</th>
+                <th className="text-right px-4 py-2.5 font-medium">โอน</th>
+                <th className="text-right px-4 py-2.5 font-medium">Ref</th>
+                <th className="text-center px-4 py-2.5 font-medium">สถานะ</th>
+                <th className="px-4 py-2.5"></th>
               </tr>
-            ) : (
-              items.map((t) => {
+            </thead>
+            <tbody>
+              {filtered.map((t) => {
                 const toMove = t.lines.filter((l) => !l.alreadyExp).length;
                 const already = t.lines.filter((l) => l.alreadyExp).length;
                 return (
-                  <tr key={t.id} className="border-t border-slate-200">
-                    <td className="p-2 text-slate-600 text-xs whitespace-nowrap">
-                      {new Date(t.createdAt).toLocaleString("th-TH")}
+                  <tr key={t.id} className="border-t border-slate-100 hover:bg-slate-50/50">
+                    <td className="px-4 py-2.5 text-slate-500 text-xs whitespace-nowrap">
+                      <div>{new Date(t.createdAt).toLocaleDateString("th-TH")}</div>
+                      <div className="text-[10px] text-slate-400">
+                        {new Date(t.createdAt).toLocaleTimeString("th-TH", {
+                          hour: "2-digit",
+                          minute: "2-digit",
+                        })}
+                      </div>
                     </td>
-                    <td className="p-2 font-mono">
-                      <button onClick={() => editDocNo(t)} className="hover:underline">
-                        {t.externalDocNo || <span className="text-slate-400">(คลิกเพื่อระบุ)</span>}
-                      </button>
-                    </td>
-                    <td className="p-2 text-xs">
-                      {t.locationFrom} → {t.locationTo}
-                    </td>
-                    <td className="p-2 text-right">{toMove}</td>
-                    <td className="p-2 text-right text-emerald-700">{already}</td>
-                    <td className="p-2 text-center">
-                      {t.closed ? (
-                        <span className="px-2 py-0.5 bg-slate-800 text-white text-xs rounded">
-                          ปิดแล้ว
-                        </span>
-                      ) : (
-                        <span className="px-2 py-0.5 bg-amber-100 text-amber-700 text-xs rounded">
-                          เปิดอยู่
-                        </span>
-                      )}
-                    </td>
-                    <td className="p-2">
-                      <div className="flex gap-1 flex-wrap justify-end">
-                        <button
-                          onClick={() => printCover(t)}
-                          className="px-2 py-1 text-xs bg-slate-800 text-white rounded hover:bg-slate-700"
-                        >
-                          พิมพ์ใบปะหน้า
-                        </button>
-                        <button
-                          onClick={() => exportBC(t)}
-                          className="px-2 py-1 text-xs border border-slate-300 rounded hover:bg-slate-100"
-                        >
-                          Export BC
-                        </button>
-                        {t.closed ? (
-                          <button
-                            onClick={() => reopen(t)}
-                            className="px-2 py-1 text-xs text-amber-700 hover:underline"
-                          >
-                            ยกเลิกเอกสาร
-                          </button>
-                        ) : (
-                          <button
-                            onClick={() => close(t)}
-                            className="px-2 py-1 text-xs text-slate-700 hover:underline"
-                          >
-                            ปิด
-                          </button>
+                    <td className="px-4 py-2.5">
+                      <button
+                        onClick={() => editDocNo(t)}
+                        className="font-mono text-sm font-semibold text-slate-800 hover:text-emerald-600 disabled:cursor-default"
+                        disabled={t.closed}
+                        title={t.closed ? "ยกเลิกเอกสารก่อนแก้" : "คลิกเพื่อแก้"}
+                      >
+                        {t.externalDocNo || (
+                          <span className="text-slate-400 italic font-sans">(ยังไม่มี)</span>
                         )}
-                        <button
-                          onClick={() => remove(t)}
-                          className="px-2 py-1 text-xs text-rose-600 hover:underline"
+                      </button>
+                      <div className="text-[10px] text-slate-400 font-mono">{t.id}</div>
+                    </td>
+                    <td className="px-4 py-2.5 text-xs text-slate-600 whitespace-nowrap">
+                      <span className="font-mono">{t.locationFrom}</span>
+                      <span className="text-slate-400 mx-1">→</span>
+                      <span className="font-mono">{t.locationTo}</span>
+                    </td>
+                    <td className="px-4 py-2.5 text-right font-semibold text-slate-800">
+                      {toMove}
+                    </td>
+                    <td className="px-4 py-2.5 text-right text-emerald-600">{already}</td>
+                    <td className="px-4 py-2.5 text-center">
+                      <StatusBadge closed={t.closed} />
+                    </td>
+                    <td className="px-4 py-2.5">
+                      <div className="flex gap-1 justify-end">
+                        <IconBtn
+                          onClick={() => printCover(t)}
+                          title="พิมพ์ใบปะหน้า"
+                          tone="primary"
                         >
-                          ลบ
-                        </button>
+                          <PrintIcon />
+                        </IconBtn>
+                        <IconBtn
+                          onClick={() => exportBC(t)}
+                          title="Export Excel (BC)"
+                        >
+                          <DownloadIcon />
+                        </IconBtn>
+                        {t.closed ? (
+                          <IconBtn
+                            onClick={() => reopen(t)}
+                            title="ยกเลิกเอกสาร (Reopen)"
+                            tone="warn"
+                          >
+                            <UnlockIcon />
+                          </IconBtn>
+                        ) : (
+                          <IconBtn onClick={() => close(t)} title="ปิดลัง">
+                            <LockIcon />
+                          </IconBtn>
+                        )}
+                        <IconBtn onClick={() => remove(t)} title="ลบ" tone="danger">
+                          <TrashIcon />
+                        </IconBtn>
                       </div>
                     </td>
                   </tr>
                 );
-              })
-            )}
-          </tbody>
-        </table>
+              })}
+            </tbody>
+          </table>
+        )}
       </div>
 
       {printing && <PrintCover t={printing} onDone={() => setPrinting(null)} />}
     </div>
+  );
+}
+
+function StatCard({
+  label,
+  value,
+  tone,
+}: {
+  label: string;
+  value: number;
+  tone: "slate" | "amber" | "emerald" | "indigo";
+}) {
+  const tones = {
+    slate: "from-slate-50 to-white border-slate-200 text-slate-700",
+    amber: "from-amber-50 to-white border-amber-200 text-amber-700",
+    emerald: "from-emerald-50 to-white border-emerald-200 text-emerald-700",
+    indigo: "from-indigo-50 to-white border-indigo-200 text-indigo-700",
+  };
+  return (
+    <div
+      className={`bg-gradient-to-br ${tones[tone]} border rounded-2xl p-4 shadow-[0_1px_2px_rgba(15,23,42,0.04)]`}
+    >
+      <div className="text-[11px] uppercase tracking-wide font-semibold opacity-70">
+        {label}
+      </div>
+      <div className="text-2xl font-extrabold mt-0.5">{value}</div>
+    </div>
+  );
+}
+
+function StatusBadge({ closed }: { closed: boolean }) {
+  return closed ? (
+    <span className="inline-flex items-center gap-1 px-2 py-0.5 bg-slate-900 text-white text-[10px] font-semibold rounded-full">
+      <LockIcon className="w-3 h-3" /> ปิดแล้ว
+    </span>
+  ) : (
+    <span className="inline-flex items-center gap-1 px-2 py-0.5 bg-amber-100 text-amber-700 text-[10px] font-semibold rounded-full">
+      <AlertIcon className="w-3 h-3" /> เปิดอยู่
+    </span>
+  );
+}
+
+function IconBtn({
+  children,
+  onClick,
+  title,
+  tone = "default",
+}: {
+  children: React.ReactNode;
+  onClick: () => void;
+  title: string;
+  tone?: "default" | "primary" | "warn" | "danger";
+}) {
+  const tones = {
+    default: "text-slate-500 hover:text-slate-900 hover:bg-slate-100",
+    primary: "text-emerald-600 hover:text-emerald-700 hover:bg-emerald-50",
+    warn: "text-amber-600 hover:text-amber-700 hover:bg-amber-50",
+    danger: "text-rose-500 hover:text-rose-700 hover:bg-rose-50",
+  };
+  return (
+    <button
+      onClick={onClick}
+      title={title}
+      className={`p-1.5 rounded-md transition ${tones[tone]}`}
+    >
+      {children}
+    </button>
   );
 }
 
@@ -187,35 +337,45 @@ function PrintCover({ t, onDone }: { t: Transfer; onDone: () => void }) {
   const already = t.lines.filter((l) => l.alreadyExp);
 
   return (
-    <div id="print-area" className="bg-white p-6 mt-6 border border-slate-200 rounded">
-      <div className="flex justify-between items-start border-b pb-3 mb-3">
+    <div id="print-area" className="bg-white p-6 mt-6 border border-slate-200 rounded-2xl">
+      <div className="flex justify-between items-start border-b-2 border-slate-900 pb-3 mb-4">
         <div>
-          <h1 className="text-xl font-bold">ใบปะหน้าลัง Short EXP</h1>
+          <div className="text-[10px] uppercase tracking-widest text-slate-500">
+            Carton Cover Sheet
+          </div>
+          <h1 className="text-2xl font-extrabold mt-0.5">ใบปะหน้าลัง Short EXP</h1>
           <div className="text-sm text-slate-600 mt-1">
-            From: <b>{t.storeFrom}</b> ({t.locationFrom}) → To: <b>{t.storeTo}</b> ({t.locationTo})
+            <span className="font-semibold">{t.storeFrom}</span> ({t.locationFrom})
+            <span className="mx-2 text-slate-400">→</span>
+            <span className="font-semibold">{t.storeTo}</span> ({t.locationTo})
           </div>
         </div>
         <div className="text-right text-sm">
-          <div>
-            External Doc No.: <span className="font-mono font-semibold">{t.externalDocNo || "-"}</span>
+          <div className="text-[10px] uppercase tracking-widest text-slate-500">External Doc No.</div>
+          <div className="font-mono font-extrabold text-xl">{t.externalDocNo || "-"}</div>
+          <div className="text-xs text-slate-500 mt-2">
+            Carton: <span className="font-mono">{t.id}</span>
           </div>
-          <div>
-            Carton ID: <span className="font-mono">{t.id}</span>
+          <div className="text-xs text-slate-500">
+            วันที่: {new Date(t.createdAt).toLocaleString("th-TH")}
           </div>
-          <div>วันที่: {new Date(t.createdAt).toLocaleString("th-TH")}</div>
         </div>
       </div>
 
       <Section
-        title={`รายการที่ต้องโอน (60008 → 60008-EXP) — ${toMove.length} รายการ`}
+        title={`รายการที่ต้องโอน (60008 → 60008-EXP)`}
+        count={toMove.length}
         rows={toMove}
         emptyText="ไม่มี"
+        tone="amber"
       />
       <div className="h-4" />
       <Section
-        title={`รายการในลังที่อยู่ที่ 60008-EXP แล้ว (อ้างอิง) — ${already.length} รายการ`}
+        title={`รายการในลังที่อยู่ที่ 60008-EXP แล้ว (อ้างอิง)`}
+        count={already.length}
         rows={already}
         emptyText="ไม่มี"
+        tone="emerald"
       />
 
       <div className="grid grid-cols-3 gap-8 mt-12 text-sm">
@@ -224,15 +384,18 @@ function PrintCover({ t, onDone }: { t: Transfer; onDone: () => void }) {
         <Sig label="ผู้รับ" />
       </div>
 
-      <div className="mt-6 no-print text-right">
+      <div className="mt-6 no-print flex justify-end gap-2">
+        <button
+          onClick={onDone}
+          className="px-4 py-1.5 text-sm text-slate-600 hover:text-slate-900"
+        >
+          ปิด
+        </button>
         <button
           onClick={() => window.print()}
-          className="px-3 py-1.5 bg-slate-800 text-white text-sm rounded"
+          className="flex items-center gap-1 px-4 py-1.5 bg-slate-900 text-white text-sm rounded-lg hover:bg-slate-800"
         >
-          พิมพ์
-        </button>
-        <button onClick={onDone} className="px-3 py-1.5 ml-2 text-sm">
-          ปิด
+          <PrintIcon /> พิมพ์
         </button>
       </div>
     </div>
@@ -241,41 +404,54 @@ function PrintCover({ t, onDone }: { t: Transfer; onDone: () => void }) {
 
 function Section({
   title,
+  count,
   rows,
   emptyText,
+  tone,
 }: {
   title: string;
+  count: number;
   rows: Transfer["lines"];
   emptyText: string;
+  tone: "amber" | "emerald";
 }) {
+  const tones = {
+    amber: "bg-amber-100 text-amber-800",
+    emerald: "bg-emerald-100 text-emerald-800",
+  };
   return (
     <div>
-      <h2 className="font-semibold mb-1">{title}</h2>
+      <div className="flex items-center gap-2 mb-2">
+        <h2 className="font-bold text-slate-900">{title}</h2>
+        <span className={`text-xs font-bold px-2 py-0.5 rounded-full ${tones[tone]}`}>
+          {count} รายการ
+        </span>
+      </div>
       {rows.length === 0 ? (
-        <div className="text-sm text-slate-500 italic">{emptyText}</div>
+        <div className="text-sm text-slate-400 italic">{emptyText}</div>
       ) : (
-        <table className="w-full text-sm border-collapse">
+        <table className="w-full text-sm border-collapse border border-slate-300">
           <thead>
-            <tr className="bg-slate-100 border-b border-slate-300">
-              <th className="text-left p-1 w-8">#</th>
-              <th className="text-left p-1">Item No.</th>
-              <th className="text-left p-1">Description</th>
-              <th className="text-left p-1">Lot No.</th>
-              <th className="text-left p-1">Exp</th>
-              <th className="text-right p-1">Qty</th>
-              <th className="text-left p-1">UoM</th>
+            <tr className="bg-slate-100 border-b-2 border-slate-300">
+              <th className="text-left p-1.5 w-8">#</th>
+              <th className="text-left p-1.5">Item No.</th>
+              <th className="text-left p-1.5">Description</th>
+              <th className="text-left p-1.5">Lot No.</th>
+              <th className="text-left p-1.5">Exp</th>
+              <th className="text-right p-1.5">Qty</th>
+              <th className="text-left p-1.5">UoM</th>
             </tr>
           </thead>
           <tbody>
             {rows.map((l, i) => (
               <tr key={i} className="border-b border-slate-200">
-                <td className="p-1">{i + 1}</td>
-                <td className="p-1 font-mono">{l.itemNo}</td>
-                <td className="p-1">{l.description}</td>
-                <td className="p-1 font-mono">{l.lotNo}</td>
-                <td className="p-1">{l.expirationDate || "-"}</td>
-                <td className="p-1 text-right">{l.quantity}</td>
-                <td className="p-1">{l.uom || ""}</td>
+                <td className="p-1.5">{i + 1}</td>
+                <td className="p-1.5 font-mono">{l.itemNo}</td>
+                <td className="p-1.5">{l.description}</td>
+                <td className="p-1.5 font-mono">{l.lotNo}</td>
+                <td className="p-1.5">{l.expirationDate || "-"}</td>
+                <td className="p-1.5 text-right font-semibold">{l.quantity}</td>
+                <td className="p-1.5">{l.uom || ""}</td>
               </tr>
             ))}
           </tbody>
@@ -288,8 +464,8 @@ function Section({
 function Sig({ label }: { label: string }) {
   return (
     <div className="text-center">
-      <div className="border-b border-slate-400 h-10" />
-      <div className="mt-1">{label}</div>
+      <div className="border-b-2 border-slate-400 h-12" />
+      <div className="mt-1 text-xs text-slate-600">({label})</div>
     </div>
   );
 }

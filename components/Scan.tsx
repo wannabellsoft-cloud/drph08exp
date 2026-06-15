@@ -6,8 +6,17 @@ import {
   saveTransfer,
   getTransfer,
   closeTransfer,
+  nextExternalDocNo,
 } from "@/lib/db";
 import type { StockSummary, Transfer, TransferLine } from "@/lib/types";
+import {
+  ScanIcon,
+  PlusIcon,
+  LockIcon,
+  TrashIcon,
+  ArrowRightIcon,
+  CheckIcon,
+} from "./Icons";
 
 const LOC_ON_HAND = "60008";
 const LOC_EXP = "60008-EXP";
@@ -15,8 +24,10 @@ const STORE = "60008";
 const CURRENT_CARTON_KEY = "current_carton_id";
 
 function uid() {
-  return "TO-" + Date.now().toString(36) + "-" + Math.random().toString(36).slice(2, 6);
+  return "C-" + Date.now().toString(36) + "-" + Math.random().toString(36).slice(2, 6);
 }
+
+type Toast = { id: number; kind: "ok" | "warn" | "err"; text: string };
 
 export function Scan() {
   const inputRef = useRef<HTMLInputElement>(null);
@@ -25,6 +36,18 @@ export function Scan() {
   const [notFound, setNotFound] = useState<string>("");
   const [carton, setCarton] = useState<Transfer | null>(null);
   const [qtyDraft, setQtyDraft] = useState<Record<string, number>>({});
+  const [nextDoc, setNextDoc] = useState<string>("");
+  const [toasts, setToasts] = useState<Toast[]>([]);
+
+  function pushToast(kind: Toast["kind"], text: string) {
+    const id = Date.now() + Math.random();
+    setToasts((ts) => [...ts, { id, kind, text }]);
+    setTimeout(() => setToasts((ts) => ts.filter((t) => t.id !== id)), 3000);
+  }
+
+  async function refreshNextDoc() {
+    setNextDoc(await nextExternalDocNo());
+  }
 
   useEffect(() => {
     inputRef.current?.focus();
@@ -34,6 +57,7 @@ export function Scan() {
         const t = await getTransfer(cid);
         if (t && !t.closed) setCarton(t);
       }
+      await refreshNextDoc();
     })();
   }, []);
 
@@ -68,17 +92,21 @@ export function Scan() {
     setQtyDraft({});
   }
 
+  async function refreshStockOf(itemNo: string) {
+    setStock(await stockForItem(itemNo));
+  }
+
   async function addLot(lotKey: string, lot: StockSummary["lots"][number], wantQty?: number) {
     if (!carton) {
-      alert("กรุณาสร้างลังใหม่ (New Carton) ก่อน");
+      pushToast("warn", "กรุณาสร้างลังใหม่ก่อน");
       return;
     }
     if (carton.closed) {
-      alert("ลังนี้ปิดแล้ว — กดยกเลิกเอกสารใน Transfers ก่อนแก้ไข");
+      pushToast("err", "ลังนี้ปิดแล้ว — กดยกเลิกเอกสารใน Transfers ก่อนแก้");
       return;
     }
     if (lot.available <= 0) {
-      alert("ยอดที่ใช้ได้ของ lot นี้เป็น 0 (ถูกจองในลังอื่นแล้ว)");
+      pushToast("err", "ยอดที่ใช้ได้ของ lot นี้เป็น 0");
       return;
     }
     const want = wantQty ?? qtyDraft[lotKey] ?? lot.available;
@@ -92,11 +120,13 @@ export function Scan() {
       uom: lot.uom,
       alreadyExp: lot.locationCode === LOC_EXP,
     };
-    // Merge if same item + lot + alreadyExp
     const existing = carton.lines.findIndex(
-      (l) => l.itemNo === line.itemNo && l.lotNo === line.lotNo && l.alreadyExp === line.alreadyExp
+      (l) =>
+        l.itemNo === line.itemNo &&
+        l.lotNo === line.lotNo &&
+        l.alreadyExp === line.alreadyExp,
     );
-    let lines = [...carton.lines];
+    const lines = [...carton.lines];
     if (existing >= 0) {
       lines[existing] = { ...lines[existing], quantity: lines[existing].quantity + qty };
     } else {
@@ -105,9 +135,8 @@ export function Scan() {
     const next = { ...carton, lines };
     await saveTransfer(next);
     setCarton(next);
-    // refresh available so the on-screen number reflects the new reservation
-    const s = await stockForItem(stock!.itemNo);
-    setStock(s);
+    await refreshStockOf(stock!.itemNo);
+    pushToast("ok", `${line.alreadyExp ? "เพิ่มอ้างอิง" : "เพิ่มลงโอน"} ${qty} ชิ้น`);
   }
 
   async function removeLine(idx: number) {
@@ -116,31 +145,31 @@ export function Scan() {
     const next = { ...carton, lines };
     await saveTransfer(next);
     setCarton(next);
-    if (stock) setStock(await stockForItem(stock.itemNo));
+    if (stock) await refreshStockOf(stock.itemNo);
   }
 
   async function updateLineQty(idx: number, q: number) {
     if (!carton || carton.closed) return;
-    const lines = carton.lines.map((l, i) => (i === idx ? { ...l, quantity: Math.max(0, q) } : l));
+    const lines = carton.lines.map((l, i) =>
+      i === idx ? { ...l, quantity: Math.max(0, q) } : l,
+    );
     const next = { ...carton, lines };
     await saveTransfer(next);
     setCarton(next);
-    if (stock) setStock(await stockForItem(stock.itemNo));
+    if (stock) await refreshStockOf(stock.itemNo);
   }
 
   async function closeCarton() {
     if (!carton) return;
-    const docNo = prompt(
-      "ระบุ External Document No. สำหรับลังนี้:",
-      carton.externalDocNo ?? ""
-    );
-    if (docNo === null) return;
-    const next = await closeTransfer(carton, docNo);
+    if (carton.lines.length === 0) {
+      pushToast("warn", "ลังยังไม่มีรายการ");
+      return;
+    }
+    const next = await closeTransfer(carton); // auto-assigns next TO08EXP-####
     localStorage.removeItem(CURRENT_CARTON_KEY);
     setCarton(null);
-    alert(
-      `ปิดลังเรียบร้อย: ${next.externalDocNo || next.id}\nยอดคงเหลือใน Ledger ถูกปรับ (60008 ↓, 60008-EXP ↑)\nไปที่แท็บ "Transfers" เพื่อพิมพ์ใบปะหน้า/Export Excel`
-    );
+    await refreshNextDoc();
+    pushToast("ok", `ปิดลังเรียบร้อย — ${next.externalDocNo}`);
   }
 
   function onKey(e: React.KeyboardEvent<HTMLInputElement>) {
@@ -154,120 +183,183 @@ export function Scan() {
   const onHandLots = stock?.lots.filter((l) => l.locationCode === LOC_ON_HAND) ?? [];
   const expLots = stock?.lots.filter((l) => l.locationCode === LOC_EXP) ?? [];
 
+  const cartonStats = carton
+    ? {
+        toMove: carton.lines.filter((l) => !l.alreadyExp).reduce((a, l) => a + l.quantity, 0),
+        toMoveLines: carton.lines.filter((l) => !l.alreadyExp).length,
+        already: carton.lines.filter((l) => l.alreadyExp).reduce((a, l) => a + l.quantity, 0),
+        alreadyLines: carton.lines.filter((l) => l.alreadyExp).length,
+      }
+    : null;
+
   return (
-    <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+    <div className="grid grid-cols-1 lg:grid-cols-12 gap-5">
       {/* Left: scan + stock */}
-      <div className="lg:col-span-2 space-y-4">
-        <div className="bg-white rounded-lg border border-slate-200 p-4">
-          <label className="text-sm font-medium text-slate-700">Scan Barcode / Item No.</label>
+      <div className="lg:col-span-8 space-y-5">
+        <Card>
+          <div className="flex items-center gap-3 mb-3">
+            <div className="w-8 h-8 rounded-lg bg-emerald-50 text-emerald-600 grid place-items-center">
+              <ScanIcon className="w-4 h-4" />
+            </div>
+            <div>
+              <div className="text-sm font-semibold text-slate-900">Scan Barcode / Item No.</div>
+              <div className="text-xs text-slate-500">ยิงบาร์โค้ดหรือพิมพ์รหัสแล้วกด Enter</div>
+            </div>
+          </div>
           <input
             ref={inputRef}
             value={barcode}
             onChange={(e) => setBarcode(e.target.value)}
             onKeyDown={onKey}
-            placeholder="ยิงบาร์โค้ดหรือพิมพ์รหัสแล้วกด Enter"
-            className="mt-1 w-full px-3 py-2 border border-slate-300 rounded-md text-base focus:outline-none focus:ring-2 focus:ring-emerald-400"
+            placeholder="เช่น 8852796203248 หรือ D21320006"
+            className="w-full px-4 py-3 text-lg font-medium border-2 border-slate-200 rounded-xl focus:outline-none focus:border-emerald-400 focus:ring-4 focus:ring-emerald-100 transition"
           />
-          {notFound && <div className="text-rose-600 text-sm mt-2">{notFound}</div>}
-        </div>
+          {notFound && (
+            <div className="mt-3 px-3 py-2 bg-rose-50 text-rose-700 text-sm rounded-lg border border-rose-200">
+              {notFound}
+            </div>
+          )}
+        </Card>
 
         {stock && (
-          <div className="bg-white rounded-lg border border-slate-200 p-4">
-            <div className="flex justify-between items-baseline mb-3">
-              <div>
-                <div className="text-xs text-slate-500">{stock.barcode}</div>
-                <div className="font-semibold text-slate-800">
-                  {stock.itemNo} — {stock.description}
+          <Card>
+            <div className="flex justify-between items-start mb-4 pb-3 border-b border-slate-100">
+              <div className="min-w-0">
+                <div className="text-[11px] text-slate-400 font-mono">{stock.barcode}</div>
+                <div className="text-xs text-slate-500 font-mono">{stock.itemNo}</div>
+                <div className="font-semibold text-slate-900 text-base mt-0.5 truncate">
+                  {stock.description}
                 </div>
               </div>
+              <button
+                onClick={() => stock && refreshStockOf(stock.itemNo)}
+                className="text-xs text-slate-500 hover:text-emerald-600"
+              >
+                รีเฟรช
+              </button>
             </div>
 
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
               <LotTable
-                title="Location 60008 (วางขาย — ต้องโอน)"
-                accent="text-amber-700"
+                title="Location 60008"
+                subtitle="วางขาย — ต้องโอน"
+                accent="amber"
                 lots={onHandLots}
                 qtyDraft={qtyDraft}
                 setQtyDraft={setQtyDraft}
-                onAdd={(k, lot, q) => addLot(k, lot, q)}
-                actionLabel="โอน → 60008-EXP"
+                onAdd={(k, lot) => addLot(k, lot)}
+                actionLabel="โอน"
                 disabled={!carton}
               />
               <LotTable
-                title="Location 60008-EXP (โอนแล้ว)"
-                accent="text-emerald-700"
+                title="Location 60008-EXP"
+                subtitle="โอนแล้ว — ใส่เป็นอ้างอิง"
+                accent="emerald"
                 lots={expLots}
                 qtyDraft={qtyDraft}
                 setQtyDraft={setQtyDraft}
-                onAdd={(k, lot, q) => addLot(k, lot, q)}
-                actionLabel="ใส่ลง (Ref)"
+                onAdd={(k, lot) => addLot(k, lot)}
+                actionLabel="Ref"
                 disabled={!carton}
               />
             </div>
+
             {onHandLots.length === 0 && expLots.length === 0 && (
-              <div className="text-sm text-slate-500 mt-3">
+              <div className="text-sm text-slate-400 mt-3 italic text-center py-6">
                 ไม่มีสต๊อกคงเหลือใน Ledger สำหรับสินค้านี้
               </div>
             )}
-          </div>
+          </Card>
+        )}
+
+        {!stock && !notFound && (
+          <Card className="text-center py-12">
+            <ScanIcon className="w-10 h-10 mx-auto text-slate-300" />
+            <div className="text-sm text-slate-400 mt-2">
+              ยังไม่มีการสแกน — ยิงบาร์โค้ดเพื่อเริ่ม
+            </div>
+          </Card>
         )}
       </div>
 
-      {/* Right: current carton */}
-      <div className="space-y-4">
-        <div className="bg-white rounded-lg border border-slate-200 p-4 sticky top-4">
-          <div className="flex justify-between items-center mb-3">
-            <h3 className="font-semibold text-slate-800">ลังที่กำลังเปิด</h3>
-            {!carton ? (
-              <button
-                onClick={newCarton}
-                className="px-3 py-1.5 bg-emerald-600 text-white text-sm rounded hover:bg-emerald-700"
-              >
-                + ลังใหม่
-              </button>
-            ) : (
-              <button
-                onClick={closeCarton}
-                disabled={carton.lines.length === 0}
-                className="px-3 py-1.5 bg-slate-800 text-white text-sm rounded hover:bg-slate-700 disabled:opacity-50"
-              >
-                ปิดลัง (Close)
-              </button>
-            )}
-          </div>
-
-          {carton ? (
-            <>
-              <div className="text-xs text-slate-500 mb-2">
-                ID: <span className="font-mono">{carton.id}</span>
-                <br />
-                {carton.locationFrom} → {carton.locationTo}
+      {/* Right: carton */}
+      <div className="lg:col-span-4">
+        <div className="sticky top-20 space-y-3">
+          <Card>
+            <div className="flex justify-between items-start mb-3">
+              <div>
+                <div className="text-sm font-semibold text-slate-900">ลังที่กำลังเปิด</div>
+                {carton ? (
+                  <div className="text-[11px] text-slate-400 font-mono mt-0.5">{carton.id}</div>
+                ) : (
+                  <div className="text-[11px] text-slate-400 mt-0.5">
+                    เลขถัดไป: <span className="font-mono">{nextDoc || "—"}</span>
+                  </div>
+                )}
               </div>
-
-              {carton.lines.length === 0 ? (
-                <div className="text-sm text-slate-500 italic">ยังไม่มีรายการในลังนี้</div>
+              {!carton ? (
+                <button
+                  onClick={newCarton}
+                  className="flex items-center gap-1 px-3 py-1.5 bg-emerald-600 text-white text-sm rounded-lg hover:bg-emerald-700 shadow-sm transition"
+                >
+                  <PlusIcon /> ลังใหม่
+                </button>
               ) : (
-                <div className="space-y-2 max-h-[60vh] overflow-y-auto">
+                <button
+                  onClick={closeCarton}
+                  disabled={carton.lines.length === 0}
+                  className="flex items-center gap-1 px-3 py-1.5 bg-slate-900 text-white text-sm rounded-lg hover:bg-slate-800 disabled:opacity-30 disabled:cursor-not-allowed shadow-sm transition"
+                >
+                  <LockIcon className="w-3.5 h-3.5" /> ปิดลัง
+                </button>
+              )}
+            </div>
+
+            {carton && cartonStats && (
+              <div className="grid grid-cols-2 gap-2 mb-3">
+                <Stat label="ต้องโอน" value={cartonStats.toMove} sub={`${cartonStats.toMoveLines} lot`} tone="amber" />
+                <Stat label="อ้างอิง" value={cartonStats.already} sub={`${cartonStats.alreadyLines} lot`} tone="emerald" />
+              </div>
+            )}
+
+            {carton ? (
+              carton.lines.length === 0 ? (
+                <div className="text-sm text-slate-400 italic text-center py-8 border border-dashed border-slate-200 rounded-lg">
+                  ยังไม่มีรายการ — ยิงบาร์โค้ดแล้วกดปุ่ม "โอน" หรือ "Ref"
+                </div>
+              ) : (
+                <div className="space-y-1.5 max-h-[55vh] overflow-y-auto scroll-thin -mx-1 px-1">
                   {carton.lines.map((l, i) => (
                     <div
                       key={i}
-                      className={`text-sm border rounded p-2 ${
+                      className={`text-sm rounded-lg p-2.5 border transition ${
                         l.alreadyExp
-                          ? "border-emerald-200 bg-emerald-50"
-                          : "border-amber-200 bg-amber-50"
+                          ? "border-emerald-200 bg-emerald-50/60"
+                          : "border-amber-200 bg-amber-50/60"
                       }`}
                     >
-                      <div className="flex justify-between gap-2">
+                      <div className="flex justify-between gap-2 items-start">
                         <div className="flex-1 min-w-0">
-                          <div className="font-medium truncate">
-                            {l.itemNo}
+                          <div className="flex items-center gap-1.5">
+                            <span
+                              className={`text-[9px] font-bold uppercase tracking-wide px-1.5 py-0.5 rounded ${
+                                l.alreadyExp
+                                  ? "bg-emerald-600 text-white"
+                                  : "bg-amber-500 text-white"
+                              }`}
+                            >
+                              {l.alreadyExp ? "REF" : "MOVE"}
+                            </span>
+                            <span className="font-mono text-xs font-semibold text-slate-800">
+                              {l.itemNo}
+                            </span>
                           </div>
-                          <div className="truncate text-slate-600 text-xs">
+                          <div className="text-[11px] text-slate-600 truncate mt-0.5">
                             {l.description}
                           </div>
-                          <div className="text-xs text-slate-500">
-                            Lot: {l.lotNo} | Exp: {l.expirationDate || "-"}
-                            {l.alreadyExp ? " | (60008-EXP)" : " | (60008)"}
+                          <div className="text-[11px] text-slate-500 mt-0.5">
+                            Lot <span className="font-mono">{l.lotNo}</span> · Exp{" "}
+                            {l.expirationDate || "-"}
                           </div>
                         </div>
                         <div className="flex flex-col items-end gap-1">
@@ -278,40 +370,97 @@ export function Scan() {
                             onChange={(e) =>
                               updateLineQty(i, parseInt(e.target.value || "0", 10))
                             }
-                            className="w-16 text-right border border-slate-300 rounded px-1 text-sm"
+                            className="w-16 text-right border border-slate-300 rounded-md px-1.5 py-0.5 text-sm font-semibold"
                           />
                           <button
                             onClick={() => removeLine(i)}
-                            className="text-xs text-rose-600 hover:underline"
+                            className="flex items-center gap-0.5 text-[11px] text-rose-500 hover:text-rose-700"
                           >
-                            ลบ
+                            <TrashIcon className="w-3 h-3" /> ลบ
                           </button>
                         </div>
                       </div>
                     </div>
                   ))}
                 </div>
-              )}
-
-              <div className="border-t border-slate-200 mt-3 pt-2 text-xs text-slate-600">
-                รายการที่ต้องโอน: {carton.lines.filter((l) => !l.alreadyExp).length} | โอนแล้ว:{" "}
-                {carton.lines.filter((l) => l.alreadyExp).length}
+              )
+            ) : (
+              <div className="text-center py-8">
+                <div className="w-12 h-12 mx-auto rounded-full bg-slate-100 grid place-items-center mb-2">
+                  <PlusIcon className="w-5 h-5 text-slate-400" />
+                </div>
+                <div className="text-sm text-slate-500">
+                  ยังไม่มีลังเปิดอยู่
+                </div>
+                <div className="text-xs text-slate-400 mt-0.5">
+                  กด "ลังใหม่" เพื่อเริ่มสร้าง TO
+                </div>
               </div>
-            </>
-          ) : (
-            <div className="text-sm text-slate-500">
-              ยังไม่มีลังเปิดอยู่ — กด "+ ลังใหม่" เพื่อเริ่มสร้าง TO
-            </div>
-          )}
+            )}
+          </Card>
         </div>
       </div>
+
+      {/* Toasts */}
+      <div className="fixed bottom-4 right-4 space-y-2 z-50">
+        {toasts.map((t) => (
+          <div
+            key={t.id}
+            className={`animate-fadeUp flex items-center gap-2 px-4 py-2.5 rounded-lg shadow-lg text-sm font-medium ${
+              t.kind === "ok"
+                ? "bg-emerald-600 text-white"
+                : t.kind === "warn"
+                ? "bg-amber-500 text-white"
+                : "bg-rose-600 text-white"
+            }`}
+          >
+            {t.kind === "ok" && <CheckIcon className="w-4 h-4" />}
+            {t.text}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function Card({ children, className = "" }: { children: React.ReactNode; className?: string }) {
+  return (
+    <div
+      className={`bg-white border border-slate-200/70 rounded-2xl p-5 shadow-[0_1px_2px_rgba(15,23,42,0.04)] ${className}`}
+    >
+      {children}
+    </div>
+  );
+}
+
+function Stat({
+  label,
+  value,
+  sub,
+  tone,
+}: {
+  label: string;
+  value: number;
+  sub?: string;
+  tone: "amber" | "emerald";
+}) {
+  const tones = {
+    amber: "bg-amber-50 text-amber-700 border-amber-100",
+    emerald: "bg-emerald-50 text-emerald-700 border-emerald-100",
+  };
+  return (
+    <div className={`rounded-xl border px-3 py-2 ${tones[tone]}`}>
+      <div className="text-[10px] uppercase tracking-wide font-semibold opacity-70">{label}</div>
+      <div className="text-xl font-extrabold leading-tight">{value}</div>
+      {sub && <div className="text-[10px] opacity-60">{sub}</div>}
     </div>
   );
 }
 
 function LotTable(props: {
   title: string;
-  accent: string;
+  subtitle: string;
+  accent: "amber" | "emerald";
   lots: StockSummary["lots"];
   qtyDraft: Record<string, number>;
   setQtyDraft: (m: Record<string, number>) => void;
@@ -319,76 +468,95 @@ function LotTable(props: {
   actionLabel: string;
   disabled: boolean;
 }) {
+  const tones = {
+    amber: {
+      header: "text-amber-700",
+      dot: "bg-amber-500",
+      btn: "bg-amber-500 hover:bg-amber-600",
+    },
+    emerald: {
+      header: "text-emerald-700",
+      dot: "bg-emerald-500",
+      btn: "bg-emerald-600 hover:bg-emerald-700",
+    },
+  }[props.accent];
+
   return (
     <div>
-      <div className={`text-xs font-semibold mb-1 ${props.accent}`}>{props.title}</div>
+      <div className="flex items-center gap-2 mb-2">
+        <span className={`w-1.5 h-1.5 rounded-full ${tones.dot}`} />
+        <span className={`text-xs font-bold ${tones.header}`}>{props.title}</span>
+        <span className="text-[10px] text-slate-400">{props.subtitle}</span>
+      </div>
       {props.lots.length === 0 ? (
-        <div className="text-xs text-slate-400 italic">ไม่มีสต๊อก</div>
+        <div className="text-xs text-slate-400 italic px-2 py-3 border border-dashed border-slate-200 rounded-lg text-center">
+          ไม่มีสต๊อก
+        </div>
       ) : (
-        <table className="w-full text-xs">
-          <thead className="text-slate-500">
-            <tr>
-              <th className="text-left font-normal">Lot</th>
-              <th className="text-left font-normal">Exp</th>
-              <th className="text-right font-normal">คงเหลือ</th>
-              <th className="text-right font-normal">ใช้ได้</th>
-              <th></th>
-              <th></th>
-            </tr>
-          </thead>
-          <tbody>
-            {props.lots.map((l) => {
-              const k = `${l.lotNo}|${l.locationCode}`;
-              const reservedNote = l.reserved > 0 ? ` (จอง ${l.reserved})` : "";
-              const noAvail = l.available <= 0;
-              return (
-                <tr key={k} className="border-t border-slate-100">
-                  <td className="py-1 font-mono">{l.lotNo}</td>
-                  <td className="py-1">{l.expirationDate || "-"}</td>
-                  <td className="py-1 text-right text-slate-500">{l.remaining}</td>
-                  <td
-                    className={`py-1 text-right font-semibold ${
-                      noAvail ? "text-rose-500" : "text-slate-900"
-                    }`}
-                    title={reservedNote}
-                  >
-                    {l.available}
-                    {l.reserved > 0 && (
-                      <span className="text-[10px] text-slate-400 ml-1">
-                        /{l.remaining}
-                      </span>
-                    )}
-                  </td>
-                  <td className="py-1">
-                    <input
-                      type="number"
-                      min={1}
-                      max={l.available}
-                      defaultValue={l.available > 0 ? l.available : 0}
-                      disabled={noAvail || props.disabled}
-                      onChange={(e) =>
-                        props.setQtyDraft({
-                          ...props.qtyDraft,
-                          [k]: parseInt(e.target.value || "0", 10),
-                        })
-                      }
-                      className="w-14 text-right border border-slate-300 rounded px-1 disabled:bg-slate-100"
-                    />
-                  </td>
-                  <td className="py-1">
-                    <button
-                      onClick={() => props.onAdd(k, l)}
-                      disabled={props.disabled || noAvail}
-                      className="px-2 py-0.5 text-xs bg-slate-800 text-white rounded hover:bg-slate-700 disabled:opacity-40"
-                    >
-                      {props.actionLabel}
-                    </button>
-                  </td>
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
+        <div className="overflow-hidden rounded-lg border border-slate-200">
+          <table className="w-full text-xs">
+            <thead>
+              <tr className="bg-slate-50 text-slate-500">
+                <th className="text-left font-medium px-2 py-1.5">Lot / Exp</th>
+                <th className="text-right font-medium px-2 py-1.5">ใช้ได้</th>
+                <th className="px-1 py-1.5 w-16"></th>
+                <th className="px-1 py-1.5"></th>
+              </tr>
+            </thead>
+            <tbody>
+              {props.lots.map((l) => {
+                const k = `${l.lotNo}|${l.locationCode}`;
+                const noAvail = l.available <= 0;
+                return (
+                  <tr key={k} className="border-t border-slate-100 hover:bg-slate-50/60">
+                    <td className="px-2 py-1.5">
+                      <div className="font-mono text-slate-800">{l.lotNo}</div>
+                      <div className="text-[10px] text-slate-400">{l.expirationDate || "—"}</div>
+                    </td>
+                    <td className="px-2 py-1.5 text-right">
+                      <div
+                        className={`font-bold ${noAvail ? "text-rose-500" : "text-slate-900"}`}
+                      >
+                        {l.available}
+                      </div>
+                      {l.reserved > 0 && (
+                        <div className="text-[10px] text-slate-400">
+                          {l.remaining} − {l.reserved}
+                        </div>
+                      )}
+                    </td>
+                    <td className="px-1 py-1.5">
+                      <input
+                        type="number"
+                        min={1}
+                        max={l.available}
+                        defaultValue={l.available > 0 ? l.available : 0}
+                        disabled={noAvail || props.disabled}
+                        onChange={(e) =>
+                          props.setQtyDraft({
+                            ...props.qtyDraft,
+                            [k]: parseInt(e.target.value || "0", 10),
+                          })
+                        }
+                        className="w-14 text-right border border-slate-300 rounded-md px-1 py-0.5 disabled:bg-slate-100 disabled:text-slate-400"
+                      />
+                    </td>
+                    <td className="px-1 py-1.5">
+                      <button
+                        onClick={() => props.onAdd(k, l)}
+                        disabled={props.disabled || noAvail}
+                        className={`flex items-center gap-0.5 px-2 py-1 text-[11px] font-semibold text-white rounded-md disabled:opacity-30 disabled:cursor-not-allowed transition ${tones.btn}`}
+                      >
+                        {props.actionLabel}
+                        <ArrowRightIcon className="w-3 h-3" />
+                      </button>
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
       )}
     </div>
   );
