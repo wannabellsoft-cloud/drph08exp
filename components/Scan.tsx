@@ -44,6 +44,13 @@ function uid(prefix = "C") {
   return prefix + "-" + Date.now().toString(36) + "-" + Math.random().toString(36).slice(2, 6);
 }
 
+function fmtDDMMYYYY(iso?: string): string {
+  if (!iso) return "";
+  const m = iso.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!m) return iso;
+  return `${m[3]}/${m[2]}/${m[1]}`;
+}
+
 type Toast = { id: number; kind: "ok" | "warn" | "err"; text: string };
 
 type EditDraft = {
@@ -945,7 +952,7 @@ function EditLotModal({
                         EXP เดิม
                       </div>
                       <div className="px-2 md:px-2.5 py-1.5 md:py-2 bg-white border border-rose-200 rounded-lg text-rose-900 font-medium text-xs md:text-sm truncate">
-                        {d.oldExpirationDate || "—"}
+                        {fmtDDMMYYYY(d.oldExpirationDate) || "—"}
                       </div>
                     </div>
                   </div>
