@@ -28,7 +28,6 @@ import {
   ArrowRightIcon,
   CheckIcon,
   EditIcon,
-  CameraIcon,
 } from "./Icons";
 
 const LOC_ON_HAND = "60008";
@@ -386,7 +385,7 @@ export function Scan() {
                 title="เปิดกล้องเพื่อสแกนบาร์โค้ด"
                 className="flex items-center gap-1 px-3 sm:px-4 py-3 bg-emerald-600 text-white rounded-xl hover:bg-emerald-700 shadow-sm transition font-medium shrink-0"
               >
-                <CameraIcon className="w-5 h-5" />
+                <ScanIcon className="w-5 h-5" />
                 <span className="hidden sm:inline text-sm">Scan</span>
               </button>
             )}

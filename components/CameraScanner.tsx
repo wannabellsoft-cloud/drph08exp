@@ -1,8 +1,39 @@
 "use client";
 import { useEffect, useRef, useState } from "react";
-import { CameraIcon, XIcon, AlertIcon } from "./Icons";
+import { ScanIcon, XIcon, AlertIcon } from "./Icons";
 
-const REGION_ID = "camera-scan-region";
+let sharedAudioCtx: AudioContext | null = null;
+
+// Short success "beep" via Web Audio API — no asset to load, works on iOS as
+// long as we're inside a user-gesture-driven flow (which we are: the modal
+// opens after a tap).
+function playBeep() {
+  try {
+    const Ctx =
+      (typeof window !== "undefined" && (window.AudioContext || (window as any).webkitAudioContext)) ||
+      null;
+    if (!Ctx) return;
+    if (!sharedAudioCtx) sharedAudioCtx = new Ctx();
+    const ctx = sharedAudioCtx;
+    if (ctx.state === "suspended") ctx.resume().catch(() => {});
+    const now = ctx.currentTime;
+
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.type = "sine";
+    osc.frequency.setValueAtTime(1320, now);          // E6
+    osc.frequency.linearRampToValueAtTime(1760, now + 0.08); // up to A6 — feels like a "success" chirp
+
+    gain.gain.setValueAtTime(0, now);
+    gain.gain.linearRampToValueAtTime(0.35, now + 0.01);
+    gain.gain.exponentialRampToValueAtTime(0.001, now + 0.18);
+
+    osc.connect(gain);
+    gain.connect(ctx.destination);
+    osc.start(now);
+    osc.stop(now + 0.2);
+  } catch {}
+}
 
 export function CameraScanner({
   onResult,
@@ -11,8 +42,8 @@ export function CameraScanner({
   onResult: (code: string) => void;
   onClose: () => void;
 }) {
-  const scannerRef = useRef<any>(null);
-  const startedRef = useRef(false);
+  const videoRef = useRef<HTMLVideoElement>(null);
+  const controlsRef = useRef<any>(null);
   const decodedRef = useRef<string | null>(null);
   const [err, setErr] = useState<string>("");
   const [status, setStatus] = useState<"starting" | "scanning" | "stopped">("starting");
@@ -25,76 +56,76 @@ export function CameraScanner({
     (async () => {
       try {
         if (typeof window !== "undefined" && !window.isSecureContext) {
-          throw new Error("ต้องเปิดผ่าน HTTPS เท่านั้น (Vercel หรือ localhost)");
+          throw new Error("ต้องเปิดผ่าน HTTPS เท่านั้น");
         }
-        const mod = await import("html5-qrcode");
+
+        const [browserMod, libMod] = await Promise.all([
+          import("@zxing/browser"),
+          import("@zxing/library"),
+        ]);
         if (cancelled) return;
-        const { Html5Qrcode, Html5QrcodeSupportedFormats } = mod as any;
 
-        const scanner = new Html5Qrcode(REGION_ID, {
-          verbose: false,
-          formatsToSupport: [
-            Html5QrcodeSupportedFormats.EAN_13,
-            Html5QrcodeSupportedFormats.EAN_8,
-            Html5QrcodeSupportedFormats.UPC_A,
-            Html5QrcodeSupportedFormats.UPC_E,
-            Html5QrcodeSupportedFormats.CODE_128,
-            Html5QrcodeSupportedFormats.CODE_39,
-            Html5QrcodeSupportedFormats.ITF,
-            Html5QrcodeSupportedFormats.QR_CODE,
-          ],
-        } as any);
-        scannerRef.current = scanner;
+        const { BrowserMultiFormatReader } = browserMod as any;
+        const { DecodeHintType, BarcodeFormat } = libMod as any;
 
-        const scanConfig: any = {
-          fps: 20,
-          qrbox: (vw: number, vh: number) => {
-            const w = Math.min(Math.round(vw * 0.92), 520);
-            const h = Math.min(Math.round(vh * 0.35), 200);
-            return { width: w, height: h };
+        const hints = new Map();
+        hints.set(DecodeHintType.POSSIBLE_FORMATS, [
+          BarcodeFormat.EAN_13,
+          BarcodeFormat.EAN_8,
+          BarcodeFormat.UPC_A,
+          BarcodeFormat.UPC_E,
+          BarcodeFormat.CODE_128,
+          BarcodeFormat.CODE_39,
+          BarcodeFormat.ITF,
+          BarcodeFormat.QR_CODE,
+        ]);
+        hints.set(DecodeHintType.TRY_HARDER, true);
+
+        // Smaller interval = faster decode loop = more frames analyzed
+        const reader = new BrowserMultiFormatReader(hints, {
+          delayBetweenScanAttempts: 80,
+          delayBetweenScanSuccess: 400,
+        });
+
+        const videoEl = videoRef.current;
+        if (!videoEl) throw new Error("video element not ready");
+
+        const controls = await reader.decodeFromConstraints(
+          {
+            audio: false,
+            video: {
+              facingMode: { ideal: "environment" },
+              width: { ideal: 1920 },
+              height: { ideal: 1080 },
+            },
           },
-          aspectRatio: window.innerHeight > window.innerWidth ? 1.3333 : 1.7777,
-          experimentalFeatures: { useBarCodeDetectorIfSupported: true },
-          // Detailed MediaTrackConstraints belong here, not in the first
-          // argument of start() — html5-qrcode requires that arg to have
-          // exactly one of facingMode / deviceId.
-          videoConstraints: {
-            facingMode: { ideal: "environment" },
-            width: { ideal: 1920 },
-            height: { ideal: 1080 },
+          videoEl,
+          (result: any, _error: any, c: any) => {
+            if (cancelled) {
+              try {
+                c?.stop?.();
+              } catch {}
+              return;
+            }
+            if (!result) return;
+            const txt = String(result.getText?.() ?? "").trim();
+            if (!txt || decodedRef.current === txt) return;
+            decodedRef.current = txt;
+            playBeep();
+            try {
+              if (navigator.vibrate) navigator.vibrate(80);
+            } catch {}
+            onResult(txt);
           },
-        };
-
-        const onDecode = (decodedText: string) => {
-          if (cancelled) return;
-          const txt = (decodedText || "").trim();
-          if (!txt || decodedRef.current === txt) return;
-          decodedRef.current = txt;
-          try {
-            if (navigator.vibrate) navigator.vibrate(80);
-          } catch {}
-          onResult(txt);
-        };
-
-        // Single start call. The first arg must have exactly 1 key
-        // (facingMode OR deviceId). The full constraints (resolution etc.)
-        // are handed in via scanConfig.videoConstraints above.
-        await scanner.start(
-          { facingMode: "environment" } as any,
-          scanConfig,
-          onDecode,
-          () => {},
         );
 
         if (cancelled) {
-          // Modal was closed before start resolved — tear down now
           try {
-            await scanner.stop();
-            scanner.clear();
+            controls.stop();
           } catch {}
           return;
         }
-        startedRef.current = true;
+        controlsRef.current = controls;
         setStatus("scanning");
       } catch (e: any) {
         if (cancelled) return;
@@ -103,8 +134,6 @@ export function CameraScanner({
           setErr("ไม่ได้รับสิทธิ์เข้าถึงกล้อง — กรุณาอนุญาตในเบราว์เซอร์");
         } else if (/notfound|no.*cam|overconstrained/i.test(msg)) {
           setErr("ไม่พบกล้องบนอุปกรณ์นี้");
-        } else if (/transition/i.test(msg)) {
-          setErr("กล้องยังกำลังเริ่มทำงาน — ลองปิดและเปิดใหม่อีกครั้ง");
         } else {
           setErr(msg);
         }
@@ -114,24 +143,15 @@ export function CameraScanner({
 
     return () => {
       cancelled = true;
-      const s = scannerRef.current;
-      if (!s) return;
-      // Only stop if we successfully started — calling stop() during the
-      // start transition is what triggers "Cannot Transition" errors.
-      if (!startedRef.current) return;
       try {
-        const state = typeof s.getState === "function" ? s.getState() : 2;
-        // Html5QrcodeScannerState: NOT_STARTED=1, SCANNING=2, PAUSED=3
-        if (state === 2 || state === 3) {
-          s.stop()
-            .catch(() => {})
-            .then(() => {
-              try {
-                s.clear();
-              } catch {}
-            })
-            .catch(() => {});
-        }
+        controlsRef.current?.stop?.();
+      } catch {}
+      // Also kill any leftover MediaStream on the video element
+      try {
+        const v = videoRef.current as any;
+        const s = v?.srcObject as MediaStream | null;
+        s?.getTracks?.().forEach((t) => t.stop());
+        if (v) v.srcObject = null;
       } catch {}
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -143,13 +163,13 @@ export function CameraScanner({
         <div className="flex items-center justify-between px-4 py-3 border-b border-slate-200">
           <div className="flex items-center gap-2">
             <div className="w-8 h-8 rounded-lg bg-emerald-50 text-emerald-600 grid place-items-center">
-              <CameraIcon className="w-4 h-4" />
+              <ScanIcon className="w-4 h-4" />
             </div>
             <div>
               <div className="text-sm font-semibold text-slate-900">สแกนบาร์โค้ด</div>
               <div className="text-[11px] text-slate-500">
                 {status === "scanning"
-                  ? "วางบาร์โค้ดให้อยู่ในกรอบแนวนอน"
+                  ? "วางบาร์โค้ดให้อยู่ในกรอบเขียว"
                   : status === "starting"
                   ? "กำลังเปิดกล้องหลัง..."
                   : "ปิดอยู่"}
@@ -164,7 +184,49 @@ export function CameraScanner({
           </button>
         </div>
 
-        <div id={REGION_ID} className="w-full bg-black" style={{ minHeight: 320 }} />
+        <div className="relative bg-black" style={{ aspectRatio: "4 / 3" }}>
+          <video
+            ref={videoRef}
+            playsInline
+            muted
+            autoPlay
+            className="absolute inset-0 w-full h-full object-cover"
+          />
+
+          {/* Scan overlay — corners + sweeping line. Pointer-events-none so
+              user taps still reach the video for autofocus on iOS Safari. */}
+          {status !== "stopped" && (
+            <div className="absolute inset-0 pointer-events-none">
+              {/* Dim the corners (everything outside the scan box) using a
+                  4-layer overlay rather than clip-path so Safari renders it */}
+              <div className="absolute inset-0 bg-black/35" />
+              <div
+                className="absolute bg-transparent ring-1 ring-emerald-400/40"
+                style={{ top: "28%", left: "6%", right: "6%", bottom: "28%" }}
+              >
+                {/* Cutout — use a contrasting box-shadow trick to "punch" through */}
+                <div
+                  className="absolute inset-0"
+                  style={{
+                    boxShadow: "0 0 0 9999px rgba(0,0,0,0.35)",
+                    background: "transparent",
+                  }}
+                />
+                {/* Corner brackets */}
+                <CornerBrackets />
+                {/* Sweeping scan line */}
+                <div className="absolute left-3 right-3 top-0 h-[3px] rounded-full bg-emerald-400 shadow-[0_0_14px_3px_rgba(16,185,129,0.65)] animate-scan-sweep" />
+              </div>
+
+              {/* Bottom hint */}
+              <div className="absolute bottom-3 left-0 right-0 text-center">
+                <span className="inline-block px-3 py-1 bg-black/55 text-white text-[11px] rounded-full">
+                  {status === "scanning" ? "กำลังสแกน..." : "เปิดกล้อง..."}
+                </span>
+              </div>
+            </div>
+          )}
+        </div>
 
         {err && (
           <div className="m-3 px-3 py-2 bg-rose-50 text-rose-700 text-xs rounded-lg border border-rose-200 flex items-start gap-2">
@@ -176,8 +238,7 @@ export function CameraScanner({
         {isIOS && (
           <div className="mx-3 mb-3 px-3 py-2 bg-amber-50 text-amber-800 text-[11px] rounded-lg border border-amber-200">
             <span className="font-semibold">iOS Safari:</span> ถ้าไม่อยากกดอนุญาตทุกครั้ง
-            ให้กดปุ่ม Share <span className="font-mono">⤴</span> →{" "}
-            <span className="font-mono">"Add to Home Screen"</span> →
+            ให้กดปุ่ม Share → <span className="font-mono">Add to Home Screen</span> →
             เปิดผ่านไอคอนบนหน้าจอหลัก สิทธิ์กล้องจะค้างไว้ถาวร
           </div>
         )}
@@ -187,5 +248,17 @@ export function CameraScanner({
         </div>
       </div>
     </div>
+  );
+}
+
+function CornerBrackets() {
+  const cls = "absolute w-7 h-7 border-emerald-400 animate-corner-pulse";
+  return (
+    <>
+      <div className={`${cls} top-0 left-0 border-t-[3px] border-l-[3px] rounded-tl-md`} />
+      <div className={`${cls} top-0 right-0 border-t-[3px] border-r-[3px] rounded-tr-md`} />
+      <div className={`${cls} bottom-0 left-0 border-b-[3px] border-l-[3px] rounded-bl-md`} />
+      <div className={`${cls} bottom-0 right-0 border-b-[3px] border-r-[3px] rounded-br-md`} />
+    </>
   );
 }
