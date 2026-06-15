@@ -32,6 +32,7 @@ import {
   MinusIcon,
   SparkleIcon,
 } from "./Icons";
+import { ADDatePicker } from "./ADDatePicker";
 
 const LOC_ON_HAND = "60008";
 const LOC_EXP = "60008-EXP";
@@ -889,17 +890,22 @@ function EditLotModal({
             </div>
           </div>
 
-          {/* Doc No. — compact on mobile */}
-          <label className="block">
-            <div className="text-[10px] uppercase tracking-wide font-semibold text-slate-500 mb-1">
-              Document No.
+          {/* Doc No. — auto-generated, read-only */}
+          <div>
+            <div className="flex items-center gap-1 mb-1">
+              <div className="text-[10px] uppercase tracking-wide font-semibold text-slate-500">
+                Document No.
+              </div>
+              <LockIcon className="w-3 h-3 text-slate-400" />
+              <div className="text-[9px] text-slate-400 italic">auto-generated</div>
             </div>
             <input
               value={d.documentNo}
-              onChange={(e) => onChange({ ...d, documentNo: e.target.value })}
-              className="w-full px-3 py-1.5 md:py-2 font-mono text-xs md:text-sm border border-slate-300 rounded-lg focus:outline-none focus:border-indigo-400 focus:ring-2 focus:ring-indigo-100"
+              readOnly
+              tabIndex={-1}
+              className="w-full px-3 py-1.5 md:py-2 font-mono text-xs md:text-sm bg-slate-50 border border-slate-200 rounded-lg text-slate-700 cursor-default select-all"
             />
-          </label>
+          </div>
 
           {/* Two-column layout on desktop only */}
           <div className="grid grid-cols-1 md:grid-cols-5 gap-3">
@@ -966,15 +972,14 @@ function EditLotModal({
                       <div className="text-[9px] uppercase tracking-wide font-semibold text-emerald-700/80 mb-1">
                         EXP ใหม่
                       </div>
-                      <input
-                        type="date"
-                        value={d.newExpirationDate}
-                        onChange={(e) => onChange({ ...d, newExpirationDate: e.target.value })}
-                        style={{ textAlign: "left" }}
-                        className={`w-full min-w-0 px-1.5 md:px-2 py-1.5 md:py-2 text-[11px] md:text-sm bg-white border rounded-lg focus:outline-none focus:ring-2 transition ${
+                      <ADDatePicker
+                        value={d.newExpirationDate || ""}
+                        onChange={(v) => onChange({ ...d, newExpirationDate: v })}
+                        placeholder="YYYY-MM-DD"
+                        className={`px-2 py-1.5 md:py-2 font-mono text-xs md:text-sm bg-white border rounded-lg focus:outline-none transition cursor-pointer hover:border-emerald-400 ${
                           expChanged
-                            ? "border-emerald-400 text-emerald-900 ring-2 ring-emerald-100 focus:border-emerald-500 focus:ring-emerald-200"
-                            : "border-emerald-200 text-slate-700 focus:border-emerald-400 focus:ring-emerald-100"
+                            ? "border-emerald-400 text-emerald-900 ring-2 ring-emerald-100"
+                            : "border-emerald-200 text-slate-700"
                         }`}
                       />
                     </div>
