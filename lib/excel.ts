@@ -2,15 +2,26 @@
 import * as XLSX from "xlsx";
 import type { Item, LedgerEntry, Transfer, ItemJournalEntry } from "./types";
 
-// DD/MM/YYYY for BC Item Journal imports
+// DD/MM/YYYY for BC Item Journal imports. Parse ISO strings literally so
+// we never round-trip through `new Date(...)` and risk a timezone shift.
 function fmtDDMMYYYY(s?: string): string {
   if (!s) return "";
+  const isoM = s.match(/^(\d{4})-(\d{1,2})-(\d{1,2})/);
+  if (isoM) {
+    const y = isoM[1];
+    const m = String(parseInt(isoM[2], 10)).padStart(2, "0");
+    const d = String(parseInt(isoM[3], 10)).padStart(2, "0");
+    return `${d}/${m}/${y}`;
+  }
   const d = new Date(s);
-  if (isNaN(d.getTime())) return s; // already formatted? leave as-is
-  const dd = String(d.getDate()).padStart(2, "0");
-  const mm = String(d.getMonth() + 1).padStart(2, "0");
-  const yy = d.getFullYear();
-  return `${dd}/${mm}/${yy}`;
+  if (isNaN(d.getTime())) return s;
+  return (
+    String(d.getDate()).padStart(2, "0") +
+    "/" +
+    String(d.getMonth() + 1).padStart(2, "0") +
+    "/" +
+    d.getFullYear()
+  );
 }
 
 // ---------- helpers ----------
@@ -24,13 +35,52 @@ function toNum(v: unknown): number {
   const n = Number(String(v).replace(/,/g, ""));
   return isFinite(n) ? n : 0;
 }
+// Convert a Date object to YYYY-MM-DD using LOCAL components. SheetJS with
+// cellDates:true returns dates in local time (it builds them via
+// `new Date(year, month-1, day)`), so `.toISOString()` would shift the
+// timestamp into UTC and, in any east-of-UTC zone like Thailand (+7),
+// rewrite "31 May" as "30 May". This off-by-one was the source of the
+// Ledger upload date drift.
+function dateToYMD(d: Date): string {
+  return (
+    d.getFullYear() +
+    "-" +
+    String(d.getMonth() + 1).padStart(2, "0") +
+    "-" +
+    String(d.getDate()).padStart(2, "0")
+  );
+}
+
 function toDate(v: unknown): string | undefined {
-  if (!v) return undefined;
-  if (v instanceof Date) return v.toISOString().slice(0, 10);
+  if (v === null || v === undefined || v === "") return undefined;
+  if (v instanceof Date) {
+    if (isNaN(v.getTime())) return undefined;
+    return dateToYMD(v);
+  }
   const s = String(v).trim();
-  // Excel might serialize dates as serial numbers via cellDates:false; we use cellDates:true
-  const d = new Date(s);
-  return isNaN(d.getTime()) ? s : d.toISOString().slice(0, 10);
+  if (!s) return undefined;
+  // Already ISO YYYY-MM-DD (with or without a time portion)
+  const isoM = s.match(/^(\d{4})-(\d{1,2})-(\d{1,2})/);
+  if (isoM) {
+    const y = isoM[1];
+    const mo = String(parseInt(isoM[2], 10)).padStart(2, "0");
+    const d = String(parseInt(isoM[3], 10)).padStart(2, "0");
+    return `${y}-${mo}-${d}`;
+  }
+  // DD/MM/YYYY or D/M/YYYY (also accepts - or . as separator)
+  const ddmmM = s.match(/^(\d{1,2})[\/\-.](\d{1,2})[\/\-.](\d{4})$/);
+  if (ddmmM) {
+    const d = parseInt(ddmmM[1], 10);
+    const m = parseInt(ddmmM[2], 10);
+    const y = parseInt(ddmmM[3], 10);
+    if (m >= 1 && m <= 12 && d >= 1 && d <= 31) {
+      return `${y}-${String(m).padStart(2, "0")}-${String(d).padStart(2, "0")}`;
+    }
+  }
+  // Last-resort fallback
+  const dt = new Date(s);
+  if (isNaN(dt.getTime())) return s;
+  return dateToYMD(dt);
 }
 
 export async function readWorkbook(file: File): Promise<XLSX.WorkBook> {
