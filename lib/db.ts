@@ -365,7 +365,13 @@ export async function markJournalExported(ids: string[]) {
 export async function unexportJournal(id: string) {
   const { error } = await sb()
     .from(T_JOURNAL)
-    .update({ exported: false, exportedAt: null, postingDate: null })
+    .update({
+      exported: false,
+      exportedAt: null,
+      postingDate: null,
+      applied: false,
+      appliedAt: null,
+    })
     .eq("id", id);
   if (error) throw error;
 }

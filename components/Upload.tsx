@@ -7,7 +7,6 @@ import {
   appendLedger,
   clearAll,
   markAppliedFromLedger,
-  markJournalAppliedFromLedger,
   countItems,
   countLedger,
   countTransfers,
@@ -96,23 +95,13 @@ export function Upload() {
         ? await replaceLedger(entries, reportProgress)
         : await appendLedger(entries, reportProgress);
       setProgress(null);
-      const [{ newlyApplied, appliedDocs }, jr] = await Promise.all([
-        markAppliedFromLedger(),
-        markJournalAppliedFromLedger(),
-      ]);
-      const transferTail =
+      const { newlyApplied, appliedDocs } = await markAppliedFromLedger();
+      const tail =
         newlyApplied > 0
           ? ` • TO applied ${newlyApplied} ลัง (${appliedDocs.slice(0, 3).join(", ")}${
               appliedDocs.length > 3 ? "…" : ""
             })`
           : "";
-      const journalTail =
-        jr.newlyApplied > 0
-          ? ` • Journal applied ${jr.newlyApplied} รายการ (${jr.appliedDocs
-              .slice(0, 3)
-              .join(", ")}${jr.appliedDocs.length > 3 ? "…" : ""})`
-          : "";
-      const tail = transferTail + journalTail;
       setMsg({
         kind: "ok",
         text: `${replace ? "แทนที่" : "เพิ่ม"} Ledger สำเร็จ: ${n.toLocaleString()} รายการ${tail}`,

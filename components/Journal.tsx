@@ -25,7 +25,7 @@ function isExpOnly(e: ItemJournalEntry): boolean {
 export function Journal() {
   const ui = useUI();
   const [entries, setEntries] = useState<ItemJournalEntry[]>([]);
-  const [filter, setFilter] = useState<"pending" | "exported" | "applied" | "all">("pending");
+  const [filter, setFilter] = useState<"pending" | "exported" | "all">("pending");
   const [typeFilter, setTypeFilter] = useState<"all" | "lot" | "exp">("all");
   const [q, setQ] = useState("");
   const [resetting, setResetting] = useState(false);
@@ -39,9 +39,8 @@ export function Journal() {
 
   const filtered = useMemo(() => {
     return entries.filter((e) => {
-      if (filter === "pending" && (e.exported || e.applied)) return false;
-      if (filter === "exported" && (!e.exported || e.applied)) return false;
-      if (filter === "applied" && !e.applied) return false;
+      if (filter === "pending" && e.exported) return false;
+      if (filter === "exported" && !e.exported) return false;
       const expOnly = isExpOnly(e);
       if (typeFilter === "lot" && expOnly) return false;
       if (typeFilter === "exp" && !expOnly) return false;
@@ -55,19 +54,18 @@ export function Journal() {
   }, [entries, filter, typeFilter, q]);
 
   const stats = useMemo(() => {
-    const pending = entries.filter((e) => !e.exported && !e.applied).length;
-    const exported = entries.filter((e) => e.exported && !e.applied).length;
-    const applied = entries.filter((e) => e.applied).length;
+    const pending = entries.filter((e) => !e.exported).length;
+    const exported = entries.filter((e) => e.exported).length;
     const pendingQty = entries
-      .filter((e) => !e.exported && !e.applied)
+      .filter((e) => !e.exported)
       .reduce((s, e) => s + Number(e.quantity || 0), 0);
     const expOnly = entries.filter((e) => isExpOnly(e)).length;
     const lotChange = entries.filter((e) => !isExpOnly(e)).length;
-    return { total: entries.length, pending, exported, applied, pendingQty, expOnly, lotChange };
+    return { total: entries.length, pending, exported, pendingQty, expOnly, lotChange };
   }, [entries]);
 
   // Count of items the Re-status button will actually flip
-  const resettable = filtered.filter((e) => e.exported && !e.applied).length;
+  const resettable = filtered.filter((e) => e.exported).length;
 
   async function bulkResetStatus() {
     if (resettable === 0) {
@@ -95,10 +93,6 @@ export function Journal() {
   }
 
   async function unexport(e: ItemJournalEntry) {
-    if (e.applied) {
-      ui.warn("Applied แล้ว", "ยกเลิกไม่ได้ — D365 จัดการแล้ว");
-      return;
-    }
     const yes = await ui.confirm({
       title: "ยกเลิก Export รายการนี้?",
       message: "รายการจะกลับไปสถานะ 'รอ Export' และแก้ไขได้อีกครั้ง",
@@ -114,19 +108,14 @@ export function Journal() {
       ui.warn("ไม่มีรายการให้ export");
       return;
     }
-    const exportable = filtered.filter((e) => !e.applied);
-    if (exportable.length === 0) {
-      ui.info("ทุกรายการ Applied แล้ว", "D365 มีอยู่แล้ว ไม่ต้อง import อีก");
-      return;
-    }
     const today = new Date().toISOString().slice(0, 10);
-    const { blob, included, skipped } = exportJournalToBC(exportable, today);
+    const { blob, included, skipped } = exportJournalToBC(filtered, today);
     if (included === 0) {
       ui.warn("ไม่มีรายการที่ export ได้", "ตรวจสอบ Doc No. / LOT / Quantity");
       return;
     }
     downloadBlob(blob, `ItemJournal-LOT60008-${today}.xlsx`);
-    const idsToMark = exportable.filter((e) => !e.exported).map((e) => e.id);
+    const idsToMark = filtered.filter((e) => !e.exported).map((e) => e.id);
     if (idsToMark.length) {
       await markJournalExported(idsToMark);
       await refresh();
@@ -143,11 +132,10 @@ export function Journal() {
 
   return (
     <div className="space-y-5">
-      <div className="grid grid-cols-2 md:grid-cols-5 gap-3 no-print">
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-3 no-print">
         <StatCard label="ทั้งหมด" value={stats.total} tone="slate" />
         <StatCard label="รอ Export" value={stats.pending} tone="amber" />
-        <StatCard label="Exported (รอ D365)" value={stats.exported} tone="indigo" />
-        <StatCard label="Applied" value={stats.applied} tone="emerald" />
+        <StatCard label="Exported" value={stats.exported} tone="indigo" />
         <StatCard label="qty รอ Export" value={stats.pendingQty} tone="slate" />
       </div>
 
@@ -201,12 +189,11 @@ export function Journal() {
           สถานะ
         </span>
         <div className="flex bg-slate-100 p-1 rounded-lg">
-          {(["all", "pending", "exported", "applied"] as const).map((k) => {
+          {(["all", "pending", "exported"] as const).map((k) => {
             const labels = {
               all: "ทั้งหมด",
               pending: "รอ Export",
               exported: "Exported",
-              applied: "Applied",
             };
             const on = filter === k;
             return (
@@ -317,15 +304,10 @@ export function Journal() {
                   </td>
                   <td className="px-4 py-2.5 text-center">
                     <JournalStatusBadge e={e} />
-                    {e.applied && e.appliedAt && (
-                      <div className="text-[9px] text-slate-400 mt-0.5">
-                        {new Date(e.appliedAt).toLocaleDateString("th-TH")}
-                      </div>
-                    )}
                   </td>
                   <td className="px-4 py-2.5">
                     <div className="flex gap-1 justify-end">
-                      {e.exported && !e.applied && (
+                      {e.exported && (
                         <button
                           onClick={() => unexport(e)}
                           title="ยกเลิก Export"
@@ -374,13 +356,6 @@ function StatCard({
 }
 
 function JournalStatusBadge({ e }: { e: ItemJournalEntry }) {
-  if (e.applied) {
-    return (
-      <span className="inline-flex items-center gap-1 px-2 py-0.5 bg-emerald-600 text-white text-[10px] font-semibold rounded-full">
-        <CheckIcon className="w-3 h-3" /> Applied
-      </span>
-    );
-  }
   if (e.exported) {
     return (
       <span className="inline-flex items-center gap-1 px-2 py-0.5 bg-indigo-600 text-white text-[10px] font-semibold rounded-full">

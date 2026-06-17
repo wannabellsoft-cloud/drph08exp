@@ -7,8 +7,17 @@ import {
   reopenTransfer,
   deleteTransferAndRevert,
   markAppliedFromLedger,
-  markJournalAppliedFromLedger,
 } from "@/lib/db";
+
+// A closed transfer with no lines that actually move (every line is just a
+// 60008-EXP reference) doesn't need to be imported into D365 — there is
+// nothing to ship. We surface it as "ไม่ต้องโอน" instead of the usual
+// "รอ D365" so users don't keep watching it for a status flip that will
+// never come.
+function isRefOnly(t: Transfer): boolean {
+  if (t.lines.length === 0) return false;
+  return t.lines.every((l) => l.alreadyExp);
+}
 import { exportTransferToBC, exportTransfersToBC, downloadBlob } from "@/lib/excel";
 import type { Transfer } from "@/lib/types";
 import { useUI } from "./UI";
@@ -28,27 +37,24 @@ export function Transfers() {
   const ui = useUI();
   const [items, setItems] = useState<Transfer[]>([]);
   const [printing, setPrinting] = useState<Transfer | null>(null);
-  const [filter, setFilter] = useState<"all" | "open" | "closed" | "applied">("all");
+  const [filter, setFilter] = useState<"all" | "open" | "closed" | "ref" | "applied">("all");
   const [q, setQ] = useState("");
   const [rechecking, setRechecking] = useState(false);
 
   async function recheckApplied() {
     setRechecking(true);
     try {
-      const [tr, jr] = await Promise.all([
-        markAppliedFromLedger(),
-        markJournalAppliedFromLedger(),
-      ]);
+      const tr = await markAppliedFromLedger();
       await refresh();
-      const parts: string[] = [];
-      if (tr.newlyApplied > 0)
-        parts.push(`TO applied ${tr.newlyApplied} ลัง (${tr.appliedDocs.slice(0, 3).join(", ")}${tr.appliedDocs.length > 3 ? "…" : ""})`);
-      if (jr.newlyApplied > 0)
-        parts.push(`Journal applied ${jr.newlyApplied} รายการ`);
-      if (parts.length) {
-        ui.ok("ตรวจสอบสถานะแล้ว", parts.join(" • "));
+      if (tr.newlyApplied > 0) {
+        ui.ok(
+          "ตรวจสอบสถานะแล้ว",
+          `TO applied ${tr.newlyApplied} ลัง (${tr.appliedDocs.slice(0, 3).join(", ")}${
+            tr.appliedDocs.length > 3 ? "…" : ""
+          })`,
+        );
       } else {
-        ui.info("ตรวจสอบสถานะแล้ว", "ไม่มี TO/Journal ใหม่ที่ Applied");
+        ui.info("ตรวจสอบสถานะแล้ว", "ไม่มี TO ใหม่ที่ Applied");
       }
     } catch (e: any) {
       ui.err("ตรวจสอบไม่สำเร็จ", e?.message ?? String(e));
@@ -65,8 +71,10 @@ export function Transfers() {
 
   const filtered = useMemo(() => {
     return items.filter((t) => {
+      const refOnly = isRefOnly(t);
       if (filter === "open" && t.closed) return false;
-      if (filter === "closed" && (!t.closed || t.applied)) return false;
+      if (filter === "closed" && (!t.closed || t.applied || refOnly)) return false;
+      if (filter === "ref" && (!t.closed || t.applied || !refOnly)) return false;
       if (filter === "applied" && !t.applied) return false;
       if (q) {
         const s = q.toLowerCase();
@@ -79,16 +87,17 @@ export function Transfers() {
 
   const stats = useMemo(() => {
     const open = items.filter((t) => !t.closed).length;
-    const closed = items.filter((t) => t.closed && !t.applied).length;
+    const closed = items.filter((t) => t.closed && !t.applied && !isRefOnly(t)).length;
+    const refOnly = items.filter((t) => t.closed && !t.applied && isRefOnly(t)).length;
     const applied = items.filter((t) => t.applied).length;
     const pendingMoveQty = items
-      .filter((t) => !t.applied)
+      .filter((t) => !t.applied && !isRefOnly(t))
       .reduce(
         (a, t) =>
           a + t.lines.filter((l) => !l.alreadyExp).reduce((s, l) => s + l.quantity, 0),
         0,
       );
-    return { total: items.length, open, closed, applied, pendingMoveQty };
+    return { total: items.length, open, closed, refOnly, applied, pendingMoveQty };
   }, [items]);
 
   async function editDocNo(t: Transfer) {
@@ -138,11 +147,16 @@ export function Transfers() {
   }
 
   async function remove(t: Transfer) {
+    if (t.applied) {
+      ui.warn(
+        "ลบไม่ได้",
+        "ลังที่ Applied แล้ว — ต้องไปยกเลิกใน D365 ก่อน (ลบ Ledger ที่มี External Doc นี้)",
+      );
+      return;
+    }
     const yes = await ui.confirm({
-      title: t.applied ? "ลบประวัติลังนี้?" : "ลบลังนี้?",
-      message: t.applied
-        ? "ลังนี้ถูก Apply โดย D365 แล้ว — การลบจะลบเฉพาะ record ในแอป (ไม่กระทบ Ledger)"
-        : "ยอดที่จองไว้จะถูกคืนกลับเป็น available ใน lot นั้น",
+      title: "ลบลังนี้?",
+      message: "ยอดที่จองไว้จะถูกคืนกลับเป็น available ใน lot นั้น",
       danger: true,
       confirmText: "ลบ",
     });
@@ -196,19 +210,26 @@ export function Transfers() {
   return (
     <div className="space-y-5">
       {/* Stats */}
-      <div className="grid grid-cols-2 md:grid-cols-5 gap-3 no-print">
+      <div className="grid grid-cols-2 md:grid-cols-6 gap-3 no-print">
         <StatCard label="ทั้งหมด" value={stats.total} tone="slate" />
         <StatCard label="เปิดอยู่" value={stats.open} tone="amber" />
-        <StatCard label="ปิดแล้ว (รอ D365)" value={stats.closed} tone="indigo" />
+        <StatCard label="รอ D365" value={stats.closed} tone="indigo" />
+        <StatCard label="ไม่ต้องโอน" value={stats.refOnly} tone="slate" />
         <StatCard label="Applied" value={stats.applied} tone="emerald" />
         <StatCard label="qty ที่ยังจอง" value={stats.pendingMoveQty} tone="slate" />
       </div>
 
       {/* Toolbar */}
       <div className="flex flex-wrap items-center gap-2 no-print">
-        <div className="flex bg-slate-100 p-1 rounded-lg">
-          {(["all", "open", "closed", "applied"] as const).map((k) => {
-            const labels = { all: "ทั้งหมด", open: "เปิดอยู่", closed: "รอ D365", applied: "Applied" };
+        <div className="flex bg-slate-100 p-1 rounded-lg flex-wrap">
+          {(["all", "open", "closed", "ref", "applied"] as const).map((k) => {
+            const labels = {
+              all: "ทั้งหมด",
+              open: "เปิดอยู่",
+              closed: "รอ D365",
+              ref: "ไม่ต้องโอน",
+              applied: "Applied",
+            };
             const on = filter === k;
             return (
               <button
@@ -308,7 +329,7 @@ export function Transfers() {
                     </td>
                     <td className="px-4 py-2.5 text-right text-emerald-600">{already}</td>
                     <td className="px-4 py-2.5 text-center">
-                      <StatusBadge closed={t.closed} applied={t.applied} />
+                      <StatusBadge t={t} />
                       {t.applied && t.appliedAt && (
                         <div className="text-[9px] text-slate-400 mt-0.5">
                           {new Date(t.appliedAt).toLocaleDateString("th-TH")}
@@ -343,9 +364,11 @@ export function Transfers() {
                             <LockIcon />
                           </IconBtn>
                         )}
-                        <IconBtn onClick={() => remove(t)} title="ลบ" tone="danger">
-                          <TrashIcon />
-                        </IconBtn>
+                        {!t.applied && (
+                          <IconBtn onClick={() => remove(t)} title="ลบ" tone="danger">
+                            <TrashIcon />
+                          </IconBtn>
+                        )}
                       </div>
                     </td>
                   </tr>
@@ -388,15 +411,22 @@ function StatCard({
   );
 }
 
-function StatusBadge({ closed, applied }: { closed: boolean; applied?: boolean }) {
-  if (applied) {
+function StatusBadge({ t }: { t: Transfer }) {
+  if (t.applied) {
     return (
       <span className="inline-flex items-center gap-1 px-2 py-0.5 bg-emerald-600 text-white text-[10px] font-semibold rounded-full">
         <CheckIcon className="w-3 h-3" /> Applied
       </span>
     );
   }
-  if (closed) {
+  if (t.closed) {
+    if (isRefOnly(t)) {
+      return (
+        <span className="inline-flex items-center gap-1 px-2 py-0.5 bg-slate-500 text-white text-[10px] font-semibold rounded-full">
+          <CheckIcon className="w-3 h-3" /> ไม่ต้องโอน
+        </span>
+      );
+    }
     return (
       <span className="inline-flex items-center gap-1 px-2 py-0.5 bg-indigo-600 text-white text-[10px] font-semibold rounded-full">
         <LockIcon className="w-3 h-3" /> รอ D365
