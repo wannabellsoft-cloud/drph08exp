@@ -15,13 +15,20 @@ import {
   CheckIcon,
   AlertIcon,
   JournalIcon,
+  CalendarIcon,
 } from "./Icons";
+
+function isExpOnly(e: ItemJournalEntry): boolean {
+  return (e.oldLotNo ?? "").trim() === (e.newLotNo ?? "").trim();
+}
 
 export function Journal() {
   const ui = useUI();
   const [entries, setEntries] = useState<ItemJournalEntry[]>([]);
   const [filter, setFilter] = useState<"pending" | "exported" | "applied" | "all">("pending");
+  const [typeFilter, setTypeFilter] = useState<"all" | "lot" | "exp">("all");
   const [q, setQ] = useState("");
+  const [resetting, setResetting] = useState(false);
 
   async function refresh() {
     setEntries(await listJournalEntries());
@@ -35,6 +42,9 @@ export function Journal() {
       if (filter === "pending" && (e.exported || e.applied)) return false;
       if (filter === "exported" && (!e.exported || e.applied)) return false;
       if (filter === "applied" && !e.applied) return false;
+      const expOnly = isExpOnly(e);
+      if (typeFilter === "lot" && expOnly) return false;
+      if (typeFilter === "exp" && !expOnly) return false;
       if (q) {
         const s = q.toLowerCase();
         const hay = `${e.documentNo} ${e.itemNo} ${e.oldLotNo} ${e.newLotNo} ${e.description ?? ""}`.toLowerCase();
@@ -42,7 +52,7 @@ export function Journal() {
       }
       return true;
     });
-  }, [entries, filter, q]);
+  }, [entries, filter, typeFilter, q]);
 
   const stats = useMemo(() => {
     const pending = entries.filter((e) => !e.exported && !e.applied).length;
@@ -51,8 +61,38 @@ export function Journal() {
     const pendingQty = entries
       .filter((e) => !e.exported && !e.applied)
       .reduce((s, e) => s + Number(e.quantity || 0), 0);
-    return { total: entries.length, pending, exported, applied, pendingQty };
+    const expOnly = entries.filter((e) => isExpOnly(e)).length;
+    const lotChange = entries.filter((e) => !isExpOnly(e)).length;
+    return { total: entries.length, pending, exported, applied, pendingQty, expOnly, lotChange };
   }, [entries]);
+
+  // Count of items the Re-status button will actually flip
+  const resettable = filtered.filter((e) => e.exported && !e.applied).length;
+
+  async function bulkResetStatus() {
+    if (resettable === 0) {
+      ui.warn("ไม่มีรายการที่ Reset ได้", "ต้องเป็น Exported (ไม่ใช่ Applied)");
+      return;
+    }
+    const yes = await ui.confirm({
+      title: `Reset ${resettable} รายการเป็น "รอ Export"?`,
+      message: "รายการที่กรองอยู่จะกลับไปสถานะ pending → แก้ไข/Export ใหม่ได้",
+      confirmText: `Reset ${resettable} รายการ`,
+    });
+    if (!yes) return;
+    setResetting(true);
+    try {
+      const targets = filtered.filter((e) => e.exported && !e.applied);
+      for (const e of targets) {
+        await unexportJournal(e.id);
+      }
+      await refresh();
+      ui.ok("Reset สำเร็จ", `${targets.length} รายการกลับเป็น "รอ Export"`);
+    } catch (e: any) {
+      ui.err("Reset ไม่สำเร็จ", e?.message ?? String(e));
+    }
+    setResetting(false);
+  }
 
   async function unexport(e: ItemJournalEntry) {
     if (e.applied) {
@@ -127,7 +167,39 @@ export function Journal() {
         </div>
       </div>
 
+      {/* Type filter — separates LOT changes from pure EXP-date corrections */}
       <div className="flex flex-wrap items-center gap-2 no-print">
+        <span className="text-[10px] uppercase tracking-wide font-semibold text-slate-500 mr-1">
+          ประเภท
+        </span>
+        <div className="flex bg-slate-100 p-1 rounded-lg">
+          {(["all", "lot", "exp"] as const).map((k) => {
+            const labels = {
+              all: `ทั้งหมด (${stats.total})`,
+              lot: `เปลี่ยน LOT (${stats.lotChange})`,
+              exp: `แก้ EXP เฉพาะ (${stats.expOnly})`,
+            };
+            const on = typeFilter === k;
+            return (
+              <button
+                key={k}
+                onClick={() => setTypeFilter(k)}
+                className={`px-3 py-1 text-xs font-medium rounded-md transition ${
+                  on ? "bg-white shadow-sm text-slate-900" : "text-slate-500 hover:text-slate-700"
+                }`}
+              >
+                {labels[k]}
+              </button>
+            );
+          })}
+        </div>
+      </div>
+
+      {/* Status filter + actions */}
+      <div className="flex flex-wrap items-center gap-2 no-print">
+        <span className="text-[10px] uppercase tracking-wide font-semibold text-slate-500 mr-1">
+          สถานะ
+        </span>
         <div className="flex bg-slate-100 p-1 rounded-lg">
           {(["all", "pending", "exported", "applied"] as const).map((k) => {
             const labels = {
@@ -154,8 +226,17 @@ export function Journal() {
           value={q}
           onChange={(e) => setQ(e.target.value)}
           placeholder="ค้นหา Doc No. / Item / Lot"
-          className="flex-1 min-w-[200px] px-3 py-1.5 text-sm border border-slate-200 rounded-lg focus:outline-none focus:border-indigo-400 focus:ring-2 focus:ring-indigo-100"
+          className="flex-1 min-w-[180px] px-3 py-1.5 text-sm border border-slate-200 rounded-lg focus:outline-none focus:border-indigo-400 focus:ring-2 focus:ring-indigo-100"
         />
+        <button
+          onClick={bulkResetStatus}
+          disabled={resetting || resettable === 0}
+          title="Reset รายการที่กรองและเป็น Exported → กลับเป็นรอ Export"
+          className="flex items-center gap-1.5 px-3 py-1.5 bg-white border border-amber-300 text-amber-700 text-sm font-medium rounded-lg hover:bg-amber-50 disabled:opacity-30 disabled:cursor-not-allowed shadow-sm transition"
+        >
+          <UnlockIcon className="w-4 h-4" />
+          {resetting ? "กำลัง Reset..." : `Re-status (${resettable})`}
+        </button>
         <button
           onClick={exportAll}
           disabled={filtered.length === 0}
@@ -215,11 +296,17 @@ export function Journal() {
                     </div>
                   </td>
                   <td className="px-4 py-2.5 text-xs">
-                    <div className="font-mono">
-                      <span className="text-rose-500">−{e.oldLotNo}</span>{" "}
-                      <span className="text-slate-400">→</span>{" "}
-                      <span className="text-emerald-600 font-semibold">+{e.newLotNo}</span>
-                    </div>
+                    {isExpOnly(e) ? (
+                      <span className="inline-flex items-center gap-1 px-1.5 py-0.5 bg-amber-100 text-amber-700 text-[10px] font-bold rounded">
+                        <CalendarIcon className="w-2.5 h-2.5" /> EXP เท่านั้น
+                      </span>
+                    ) : (
+                      <div className="font-mono">
+                        <span className="text-rose-500">−{e.oldLotNo}</span>{" "}
+                        <span className="text-slate-400">→</span>{" "}
+                        <span className="text-emerald-600 font-semibold">+{e.newLotNo}</span>
+                      </div>
+                    )}
                     <div className="text-[10px] text-slate-500">
                       {e.oldExpirationDate || "—"} → {e.newExpirationDate || "—"}
                     </div>
