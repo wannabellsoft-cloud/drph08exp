@@ -6,6 +6,8 @@ import {
   closeTransfer,
   reopenTransfer,
   deleteTransferAndRevert,
+  markAppliedFromLedger,
+  markJournalAppliedFromLedger,
 } from "@/lib/db";
 import { exportTransferToBC, exportTransfersToBC, downloadBlob } from "@/lib/excel";
 import type { Transfer } from "@/lib/types";
@@ -28,6 +30,31 @@ export function Transfers() {
   const [printing, setPrinting] = useState<Transfer | null>(null);
   const [filter, setFilter] = useState<"all" | "open" | "closed" | "applied">("all");
   const [q, setQ] = useState("");
+  const [rechecking, setRechecking] = useState(false);
+
+  async function recheckApplied() {
+    setRechecking(true);
+    try {
+      const [tr, jr] = await Promise.all([
+        markAppliedFromLedger(),
+        markJournalAppliedFromLedger(),
+      ]);
+      await refresh();
+      const parts: string[] = [];
+      if (tr.newlyApplied > 0)
+        parts.push(`TO applied ${tr.newlyApplied} ลัง (${tr.appliedDocs.slice(0, 3).join(", ")}${tr.appliedDocs.length > 3 ? "…" : ""})`);
+      if (jr.newlyApplied > 0)
+        parts.push(`Journal applied ${jr.newlyApplied} รายการ`);
+      if (parts.length) {
+        ui.ok("ตรวจสอบสถานะแล้ว", parts.join(" • "));
+      } else {
+        ui.info("ตรวจสอบสถานะแล้ว", "ไม่มี TO/Journal ใหม่ที่ Applied");
+      }
+    } catch (e: any) {
+      ui.err("ตรวจสอบไม่สำเร็จ", e?.message ?? String(e));
+    }
+    setRechecking(false);
+  }
 
   async function refresh() {
     setItems(await listTransfers());
@@ -202,6 +229,15 @@ export function Transfers() {
           placeholder="ค้นหา External Doc No. หรือ Carton ID"
           className="flex-1 min-w-[200px] px-3 py-1.5 text-sm border border-slate-200 rounded-lg focus:outline-none focus:border-emerald-400 focus:ring-2 focus:ring-emerald-100"
         />
+        <button
+          onClick={recheckApplied}
+          disabled={rechecking}
+          title="ตรวจสอบสถานะ Applied ใหม่จาก Ledger ปัจจุบัน"
+          className="flex items-center gap-1.5 px-3 py-1.5 bg-white border border-slate-300 text-slate-700 text-sm font-medium rounded-lg hover:bg-slate-50 disabled:opacity-30 disabled:cursor-not-allowed shadow-sm transition"
+        >
+          <CheckIcon className="w-4 h-4" />
+          {rechecking ? "กำลังตรวจ..." : "ตรวจสอบสถานะ"}
+        </button>
         <button
           onClick={exportAll}
           disabled={filtered.length === 0}

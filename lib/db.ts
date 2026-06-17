@@ -371,47 +371,35 @@ export async function unexportJournal(id: string) {
 }
 
 // ============ APPLIED RECONCILE ============
+// Per-candidate exact-match probe. We avoid bulk-fetching all ledger
+// externalDocNo values because the Supabase REST default of 1000 rows can
+// silently truncate the set when the Ledger holds thousands of entries —
+// which was making some Transfers stay "รอ D365" even though their
+// External Doc No. was present in the new Ledger.
 export async function markAppliedFromLedger(): Promise<{
   newlyApplied: number;
   appliedDocs: string[];
 }> {
-  // Get distinct externalDocNo seen in Ledger via RPC (fast).
-  let docs = new Set<string>();
-  const r = await sb().rpc("distinct_external_docs");
-  if (!r.error && Array.isArray(r.data)) {
-    for (const v of r.data as string[]) {
-      const d = (v ?? "").toString().trim();
-      if (d) docs.add(d);
-    }
-  } else {
-    // Fallback: pull externalDocNo column and dedupe client-side
-    const { data, error } = await sb()
-      .from(T_LEDGER)
-      .select("externalDocNo")
-      .not("externalDocNo", "is", null);
-    if (error) throw error;
-    for (const row of data ?? []) {
-      const d = ((row as any).externalDocNo ?? "").toString().trim();
-      if (d) docs.add(d);
-    }
-  }
-
-  // Find candidate transfers
-  const { data: candidates, error: e2 } = await sb()
+  const { data: candidates, error: e1 } = await sb()
     .from(T_TRANSFERS)
     .select("id, externalDocNo, closed, applied")
-    .eq("closed", true)
-    .or("applied.is.null,applied.eq.false");
-  if (e2) throw e2;
+    .eq("closed", true);
+  if (e1) throw e1;
+
+  const pending = (candidates ?? []).filter(
+    (t: any) => !t.applied && (t.externalDocNo ?? "").trim() !== "",
+  );
 
   const ids: string[] = [];
   const doneDocs: string[] = [];
-  for (const t of (candidates ?? []) as Pick<
-    Transfer,
-    "id" | "externalDocNo" | "closed" | "applied"
-  >[]) {
+  for (const t of pending as Pick<Transfer, "id" | "externalDocNo">[]) {
     const d = (t.externalDocNo ?? "").trim();
-    if (d && docs.has(d)) {
+    const { count, error } = await sb()
+      .from(T_LEDGER)
+      .select("entryNo", { count: "exact", head: true })
+      .eq("externalDocNo", d);
+    if (error) continue;
+    if ((count ?? 0) > 0) {
       ids.push(t.id);
       doneDocs.push(d);
     }
@@ -433,40 +421,26 @@ export async function markJournalAppliedFromLedger(): Promise<{
   newlyApplied: number;
   appliedDocs: string[];
 }> {
-  let docs = new Set<string>();
-  const r = await sb().rpc("distinct_document_nos");
-  if (!r.error && Array.isArray(r.data)) {
-    for (const v of r.data as string[]) {
-      const d = (v ?? "").toString().trim();
-      if (d) docs.add(d);
-    }
-  } else {
-    const { data, error } = await sb()
-      .from(T_LEDGER)
-      .select("documentNo")
-      .not("documentNo", "is", null);
-    if (error) throw error;
-    for (const row of data ?? []) {
-      const d = ((row as any).documentNo ?? "").toString().trim();
-      if (d) docs.add(d);
-    }
-  }
-
-  const { data: candidates, error: e2 } = await sb()
+  const { data: candidates, error: e1 } = await sb()
     .from(T_JOURNAL)
     .select("id, documentNo, exported, applied")
-    .eq("exported", true)
-    .or("applied.is.null,applied.eq.false");
-  if (e2) throw e2;
+    .eq("exported", true);
+  if (e1) throw e1;
+
+  const pending = (candidates ?? []).filter(
+    (j: any) => !j.applied && (j.documentNo ?? "").trim() !== "",
+  );
 
   const ids: string[] = [];
   const doneDocs: string[] = [];
-  for (const j of (candidates ?? []) as Pick<
-    ItemJournalEntry,
-    "id" | "documentNo" | "exported" | "applied"
-  >[]) {
+  for (const j of pending as Pick<ItemJournalEntry, "id" | "documentNo">[]) {
     const d = (j.documentNo ?? "").trim();
-    if (d && docs.has(d)) {
+    const { count, error } = await sb()
+      .from(T_LEDGER)
+      .select("entryNo", { count: "exact", head: true })
+      .eq("documentNo", d);
+    if (error) continue;
+    if ((count ?? 0) > 0) {
       ids.push(j.id);
       doneDocs.push(d);
     }
