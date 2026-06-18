@@ -111,6 +111,7 @@ export function parseItemMaster(rows: Record<string, unknown>[]): Item[] {
         unitPrice: toNum(r["Unit Price Including VAT"] ?? r["Unit Price"]),
         itemCategoryDes: toStr(r["Item Category Des"]),
         productGroupDes: toStr(r["Product Group Des"]),
+        divisionCode: toStr(r["Division Code"]),
       } as Item;
     })
     .filter((x): x is Item => !!x);

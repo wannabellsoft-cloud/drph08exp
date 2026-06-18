@@ -235,23 +235,8 @@ export async function listItemsByCategoryRough(
     if (category === "demo") {
       q = q.or("description.ilike.%D7%,description2.ilike.%D7%");
     } else {
-      // Gift heuristic — any of the gift keywords in category / group /
-      // description fields.
-      q = q.or(
-        [
-          "itemCategoryDes.ilike.%premium%",
-          "itemCategoryDes.ilike.%gift%",
-          "itemCategoryDes.ilike.%ของแถม%",
-          "itemCategoryDes.ilike.%แถม%",
-          "productGroupDes.ilike.%premium%",
-          "productGroupDes.ilike.%gift%",
-          "productGroupDes.ilike.%ของแถม%",
-          "productGroupDes.ilike.%แถม%",
-          "description.ilike.%premium%",
-          "description.ilike.%gift%",
-          "description.ilike.%ของแถม%",
-        ].join(","),
-      );
+      // Premium Gift = Division Code "D001"
+      q = q.eq("divisionCode", "D001");
     }
     const { data, error } = await q.range(from, from + PAGE - 1);
     if (error) throw error;

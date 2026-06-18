@@ -10,6 +10,8 @@ export type Item = {
   unitPrice?: number;
   itemCategoryDes?: string;
   productGroupDes?: string;
+  // Division Code — used to identify Premium Gift items (D001).
+  divisionCode?: string;
 };
 
 export type PreCountCategory = "demo" | "gift" | "gift-paid" | "normal";

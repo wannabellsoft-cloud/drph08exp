@@ -56,9 +56,9 @@ export function PreCount() {
       <div className="bg-white border border-slate-200/70 rounded-2xl p-2 shadow-[0_1px_2px_rgba(15,23,42,0.04)]">
         <div className="grid grid-cols-3 gap-1">
           {([
-            { key: "demo", label: "Demo", desc: "รายการ Demo ทั้งหมด", tone: "indigo" },
-            { key: "gift", label: "Gift", desc: "ของแถมทั้งหมด", tone: "rose" },
-            { key: "count", label: "นับ Stock", desc: "สแกน + นับจำนวน", tone: "emerald" },
+            { key: "demo", label: "Demo", desc: "รายการ Demo (D7) ทั้งหมด", tone: "indigo" },
+            { key: "gift", label: "Gift", desc: "ของแถม (D001) ทั้งหมด", tone: "rose" },
+            { key: "count", label: "นับ Stock", desc: "สแกน + นับ Gift เท่านั้น", tone: "emerald" },
           ] as const).map((t) => {
             const on = subTab === t.key;
             const tones = {
@@ -449,6 +449,15 @@ function CountSection() {
 
   async function addToSession() {
     if (!scanned) return;
+    if (scanned.category !== "gift" && scanned.category !== "gift-paid") {
+      pushToast(
+        "err",
+        scanned.category === "demo"
+          ? "Demo ไม่นับในแท็บนี้ — ดูที่แท็บ Demo"
+          : "นับลังนี้รับเฉพาะของแถม (Premium Gift / D001) เท่านั้น",
+      );
+      return;
+    }
     if (qty <= 0) {
       pushToast("err", "จำนวนต้องมากกว่า 0");
       return;
@@ -684,79 +693,93 @@ function CountSection() {
                 </div>
               </div>
 
+              {scanned.category === "demo" && (
+                <div className="mb-3 text-[11px] text-indigo-800 bg-indigo-50 border border-indigo-200 rounded-lg p-2">
+                  สินค้านี้คือ <b>Demo (D7)</b> — แท็บนี้รับเฉพาะ <b>Premium Gift (D001)</b>{" "}
+                  · ดูรายการ Demo ที่แท็บ <b>"Demo"</b> ด้านบน
+                </div>
+              )}
+
               {scanned.category === "normal" && (
-                <div className="mb-3 text-[11px] text-amber-800 bg-amber-50 border border-amber-200 rounded-lg p-2">
-                  ⚠ สินค้านี้ไม่ใช่ Demo หรือ Premium Gift —
-                  ถ้าจะเพิ่มต่อ ระบบจะใส่หมวด "ปกติ" ให้
-                </div>
-              )}
-
-              {scanned.remaining === 0 && (
                 <div className="mb-3 text-[11px] text-rose-800 bg-rose-50 border border-rose-200 rounded-lg p-2">
-                  สินค้านี้ไม่มี Remain ใน Ledger — เพิ่มไม่ได้
+                  สินค้านี้ไม่ใช่ของแถม (Division Code ≠ <b>D001</b>) — เพิ่มลงลังนี้ไม่ได้
                 </div>
               )}
 
-              <div className="flex items-end gap-3">
-                <div>
-                  <div className="flex items-baseline justify-between mb-1">
-                    <span className="text-[10px] uppercase tracking-wide font-semibold text-slate-500">
-                      จำนวน
-                    </span>
-                    <span className="text-[10px] text-slate-400 ml-2">
-                      max <span className="font-bold text-slate-600">{maxCanAdd}</span>
-                    </span>
+              {scanned.remaining === 0 &&
+                (scanned.category === "gift" || scanned.category === "gift-paid") && (
+                  <div className="mb-3 text-[11px] text-rose-800 bg-rose-50 border border-rose-200 rounded-lg p-2">
+                    สินค้านี้ไม่มี Remain ใน Ledger — เพิ่มไม่ได้
                   </div>
-                  <div className="flex items-center gap-2">
+                )}
+
+              {(() => {
+                const isGift =
+                  scanned.category === "gift" || scanned.category === "gift-paid";
+                const fullyBlocked = !isGift || maxCanAdd <= 0;
+                return (
+                  <div className="flex items-end gap-3">
+                    <div>
+                      <div className="flex items-baseline justify-between mb-1">
+                        <span className="text-[10px] uppercase tracking-wide font-semibold text-slate-500">
+                          จำนวน
+                        </span>
+                        <span className="text-[10px] text-slate-400 ml-2">
+                          max <span className="font-bold text-slate-600">{maxCanAdd}</span>
+                        </span>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <button
+                          type="button"
+                          onClick={() => setQty(Math.max(1, qty - 1))}
+                          disabled={fullyBlocked || qty <= 1}
+                          className="w-9 h-9 rounded-full bg-slate-100 hover:bg-slate-200 active:scale-95 text-lg font-bold text-slate-700 disabled:opacity-30 disabled:cursor-not-allowed"
+                        >
+                          −
+                        </button>
+                        <input
+                          type="number"
+                          min={1}
+                          max={maxCanAdd}
+                          value={qty}
+                          onChange={(e) => {
+                            const v = parseInt(e.target.value || "0", 10);
+                            if (Number.isNaN(v)) return;
+                            setQty(Math.max(0, Math.min(v, maxCanAdd)));
+                          }}
+                          disabled={fullyBlocked}
+                          className="w-20 text-center text-2xl font-extrabold border-2 border-slate-200 rounded-xl py-1.5 focus:outline-none focus:border-emerald-400 focus:ring-2 focus:ring-emerald-100 disabled:bg-slate-100 disabled:text-slate-400 disabled:cursor-not-allowed"
+                        />
+                        <button
+                          type="button"
+                          onClick={() => setQty(Math.min(maxCanAdd, qty + 1))}
+                          disabled={fullyBlocked || qty >= maxCanAdd}
+                          className="w-9 h-9 rounded-full bg-slate-100 hover:bg-slate-200 active:scale-95 text-lg font-bold text-slate-700 disabled:opacity-30 disabled:cursor-not-allowed"
+                        >
+                          +
+                        </button>
+                      </div>
+                      <div className="flex gap-1 mt-1">
+                        <button
+                          type="button"
+                          onClick={() => setQty(maxCanAdd)}
+                          disabled={fullyBlocked}
+                          className="px-1.5 py-0.5 text-[10px] font-semibold bg-white border border-emerald-200 text-emerald-700 rounded hover:bg-emerald-50 disabled:opacity-30 disabled:cursor-not-allowed"
+                        >
+                          max ({maxCanAdd})
+                        </button>
+                      </div>
+                    </div>
                     <button
-                      type="button"
-                      onClick={() => setQty(Math.max(1, qty - 1))}
-                      disabled={qty <= 1}
-                      className="w-9 h-9 rounded-full bg-slate-100 hover:bg-slate-200 active:scale-95 text-lg font-bold text-slate-700 disabled:opacity-30"
+                      onClick={addToSession}
+                      disabled={fullyBlocked || qty <= 0}
+                      className="flex-1 flex items-center justify-center gap-2 px-4 py-3 bg-gradient-to-br from-emerald-500 to-emerald-700 text-white text-sm font-semibold rounded-xl active:scale-95 shadow-md transition disabled:opacity-40 disabled:cursor-not-allowed disabled:from-slate-400 disabled:to-slate-500"
                     >
-                      −
-                    </button>
-                    <input
-                      type="number"
-                      min={1}
-                      max={maxCanAdd}
-                      value={qty}
-                      onChange={(e) => {
-                        const v = parseInt(e.target.value || "0", 10);
-                        if (Number.isNaN(v)) return;
-                        setQty(Math.max(0, Math.min(v, maxCanAdd)));
-                      }}
-                      disabled={maxCanAdd <= 0}
-                      className="w-20 text-center text-2xl font-extrabold border-2 border-slate-200 rounded-xl py-1.5 focus:outline-none focus:border-emerald-400 focus:ring-2 focus:ring-emerald-100 disabled:bg-slate-100 disabled:text-slate-400"
-                    />
-                    <button
-                      type="button"
-                      onClick={() => setQty(Math.min(maxCanAdd, qty + 1))}
-                      disabled={qty >= maxCanAdd}
-                      className="w-9 h-9 rounded-full bg-slate-100 hover:bg-slate-200 active:scale-95 text-lg font-bold text-slate-700 disabled:opacity-30"
-                    >
-                      +
+                      <PlusIcon /> ลงในลัง
                     </button>
                   </div>
-                  <div className="flex gap-1 mt-1">
-                    <button
-                      type="button"
-                      onClick={() => setQty(maxCanAdd)}
-                      disabled={maxCanAdd <= 0}
-                      className="px-1.5 py-0.5 text-[10px] font-semibold bg-white border border-emerald-200 text-emerald-700 rounded hover:bg-emerald-50 disabled:opacity-30"
-                    >
-                      max ({maxCanAdd})
-                    </button>
-                  </div>
-                </div>
-                <button
-                  onClick={addToSession}
-                  disabled={maxCanAdd <= 0 || qty <= 0}
-                  className="flex-1 flex items-center justify-center gap-2 px-4 py-3 bg-gradient-to-br from-emerald-500 to-emerald-700 text-white text-sm font-semibold rounded-xl active:scale-95 shadow-md transition disabled:opacity-40 disabled:cursor-not-allowed disabled:from-slate-400 disabled:to-slate-500"
-                >
-                  <PlusIcon /> ลงในลัง
-                </button>
-              </div>
+                );
+              })()}
             </div>
           )}
 

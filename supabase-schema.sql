@@ -15,7 +15,9 @@ create table if not exists items (
 alter table items add column if not exists "unitPrice"        numeric;
 alter table items add column if not exists "itemCategoryDes"  text;
 alter table items add column if not exists "productGroupDes"  text;
-create index if not exists items_barcode_idx on items(barcode);
+alter table items add column if not exists "divisionCode"     text;
+create index if not exists items_barcode_idx     on items(barcode);
+create index if not exists items_divisionCode_idx on items("divisionCode");
 
 create table if not exists ledger (
   "entryNo"             bigint primary key,
