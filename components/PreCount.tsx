@@ -1,5 +1,5 @@
 "use client";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import dynamic from "next/dynamic";
 import {
   findItemByBarcode,
@@ -8,8 +8,16 @@ import {
   listPreCountSessions,
   deleteTransferRaw,
   stockForItem,
+  listItemsByCategoryRough,
+  fetchRemainTotals,
 } from "@/lib/db";
-import type { Item, Transfer, TransferLine, PreCountCategory, StockSummary } from "@/lib/types";
+import type {
+  Item,
+  Transfer,
+  TransferLine,
+  PreCountCategory,
+  StockSummary,
+} from "@/lib/types";
 import { classifyItem, CATEGORY_META } from "@/lib/itemClassify";
 import { useUI } from "./UI";
 import { PreCountCoverSheet } from "./PreCountCoverSheet";
@@ -37,15 +45,299 @@ function uid(prefix = "PC") {
   return prefix + "-" + Date.now().toString(36) + "-" + Math.random().toString(36).slice(2, 6);
 }
 
+type SubTab = "demo" | "gift" | "count";
+
+export function PreCount() {
+  const [subTab, setSubTab] = useState<SubTab>("demo");
+
+  return (
+    <div className="space-y-5">
+      {/* Sub-tabs */}
+      <div className="bg-white border border-slate-200/70 rounded-2xl p-2 shadow-[0_1px_2px_rgba(15,23,42,0.04)]">
+        <div className="grid grid-cols-3 gap-1">
+          {([
+            { key: "demo", label: "Demo", desc: "รายการ Demo ทั้งหมด", tone: "indigo" },
+            { key: "gift", label: "Gift", desc: "ของแถมทั้งหมด", tone: "rose" },
+            { key: "count", label: "นับ Stock", desc: "สแกน + นับจำนวน", tone: "emerald" },
+          ] as const).map((t) => {
+            const on = subTab === t.key;
+            const tones = {
+              indigo: on ? "bg-indigo-600 text-white" : "text-slate-600 hover:bg-slate-50",
+              rose: on ? "bg-rose-500 text-white" : "text-slate-600 hover:bg-slate-50",
+              emerald: on ? "bg-emerald-600 text-white" : "text-slate-600 hover:bg-slate-50",
+            } as const;
+            return (
+              <button
+                key={t.key}
+                onClick={() => setSubTab(t.key)}
+                className={`flex flex-col items-center gap-0.5 px-3 py-3 rounded-xl text-sm font-semibold transition active:scale-95 ${tones[t.tone]}`}
+              >
+                <span>{t.label}</span>
+                <span className={`text-[10px] font-normal ${on ? "opacity-90" : "text-slate-400"}`}>
+                  {t.desc}
+                </span>
+              </button>
+            );
+          })}
+        </div>
+      </div>
+
+      {subTab === "demo" && <ItemsBrowser category="demo" />}
+      {subTab === "gift" && <ItemsBrowser category="gift" />}
+      {subTab === "count" && <CountSection />}
+    </div>
+  );
+}
+
+// ============================================================
+// Items Browser — Demo / Gift catalogue with Ledger Remain
+// ============================================================
+
+type BrowseRow = {
+  item: Item;
+  category: PreCountCategory;
+  remain: number;
+};
+
+function ItemsBrowser({ category }: { category: "demo" | "gift" }) {
+  const ui = useUI();
+  const [rows, setRows] = useState<BrowseRow[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [q, setQ] = useState("");
+  const [onlyInStock, setOnlyInStock] = useState(true);
+  const [refreshKey, setRefreshKey] = useState(0);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      setLoading(true);
+      try {
+        const [items, remainMap] = await Promise.all([
+          listItemsByCategoryRough(category),
+          fetchRemainTotals(),
+        ]);
+        if (cancelled) return;
+        const want: PreCountCategory[] =
+          category === "demo" ? ["demo"] : ["gift", "gift-paid"];
+        const out: BrowseRow[] = [];
+        for (const it of items) {
+          const cat = classifyItem(it);
+          if (!want.includes(cat)) continue;
+          out.push({
+            item: it,
+            category: cat,
+            remain: remainMap.get(it.itemNo) ?? 0,
+          });
+        }
+        // Sort: by Remain desc, then by Item No
+        out.sort((a, b) => {
+          if (b.remain !== a.remain) return b.remain - a.remain;
+          return a.item.itemNo.localeCompare(b.item.itemNo);
+        });
+        setRows(out);
+      } catch (e: any) {
+        ui.err("โหลดข้อมูลไม่สำเร็จ", e?.message ?? String(e));
+      }
+      setLoading(false);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [category, refreshKey, ui]);
+
+  const filtered = useMemo(() => {
+    return rows.filter((r) => {
+      if (onlyInStock && r.remain <= 0) return false;
+      if (q) {
+        const s = q.toLowerCase();
+        const hay = `${r.item.itemNo} ${r.item.barcode ?? ""} ${r.item.description ?? ""} ${r.item.description2 ?? ""}`.toLowerCase();
+        if (!hay.includes(s)) return false;
+      }
+      return true;
+    });
+  }, [rows, onlyInStock, q]);
+
+  const stats = useMemo(() => {
+    const inStock = rows.filter((r) => r.remain > 0);
+    const totalRemain = rows.reduce((a, r) => a + r.remain, 0);
+    const giftPaid = rows.filter((r) => r.category === "gift-paid").length;
+    return {
+      total: rows.length,
+      inStock: inStock.length,
+      totalRemain,
+      giftPaid,
+    };
+  }, [rows]);
+
+  const titleMeta =
+    category === "demo"
+      ? { title: "Demo (D7)", tone: "indigo" as const, icon: "🔵" }
+      : { title: "Premium Gift", tone: "rose" as const, icon: "🌸" };
+
+  return (
+    <div className="space-y-4">
+      {/* Stats */}
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+        <StatCard label="รายการทั้งหมด" value={stats.total} tone="slate" />
+        <StatCard label="มี Stock" value={stats.inStock} tone="emerald" />
+        <StatCard label="Remain รวม" value={stats.totalRemain} tone={titleMeta.tone} />
+        {category === "gift" ? (
+          <StatCard label="ของแถมมีมูลค่า" value={stats.giftPaid} tone="amber" />
+        ) : (
+          <StatCard label="ไม่มี Stock" value={stats.total - stats.inStock} tone="slate" />
+        )}
+      </div>
+
+      {/* Toolbar */}
+      <div className="flex flex-wrap items-center gap-2">
+        <input
+          value={q}
+          onChange={(e) => setQ(e.target.value)}
+          placeholder={`ค้นหา ${titleMeta.title} — Item No. / Barcode / Description`}
+          className="flex-1 min-w-[220px] px-3 py-2 text-sm border border-slate-200 rounded-lg focus:outline-none focus:border-indigo-400 focus:ring-2 focus:ring-indigo-100"
+        />
+        <label className="flex items-center gap-1.5 text-xs text-slate-600 px-2 py-1.5 bg-white border border-slate-200 rounded-lg cursor-pointer">
+          <input
+            type="checkbox"
+            checked={onlyInStock}
+            onChange={(e) => setOnlyInStock(e.target.checked)}
+            className="accent-indigo-600"
+          />
+          เฉพาะที่มี Remain
+        </label>
+        <button
+          onClick={() => setRefreshKey((k) => k + 1)}
+          disabled={loading}
+          className="flex items-center gap-1.5 px-3 py-1.5 bg-white border border-slate-300 text-slate-700 text-sm font-medium rounded-lg hover:bg-slate-50 disabled:opacity-30 shadow-sm transition"
+        >
+          {loading ? "กำลังโหลด..." : "รีเฟรช"}
+        </button>
+      </div>
+
+      {/* Table */}
+      <div className="bg-white border border-slate-200/70 rounded-2xl overflow-hidden shadow-[0_1px_2px_rgba(15,23,42,0.04)]">
+        {loading && rows.length === 0 ? (
+          <div className="p-12 text-center text-sm text-slate-400">
+            กำลังโหลดรายการ {titleMeta.title}...
+          </div>
+        ) : filtered.length === 0 ? (
+          <div className="p-12 text-center">
+            <GiftIcon className="w-10 h-10 mx-auto text-slate-300" />
+            <div className="text-sm text-slate-400 mt-2">
+              {rows.length === 0
+                ? `ยังไม่พบรายการ ${titleMeta.title} ใน Item Master`
+                : "ไม่มีรายการที่ตรงกับเงื่อนไข"}
+            </div>
+          </div>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="bg-slate-50 text-slate-500 text-xs">
+                  <th className="text-left px-3 py-2.5 font-medium w-10">#</th>
+                  <th className="text-left px-3 py-2.5 font-medium">Item No.</th>
+                  <th className="text-left px-3 py-2.5 font-medium">Description</th>
+                  <th className="text-left px-3 py-2.5 font-medium">UoM</th>
+                  {category === "gift" && (
+                    <th className="text-right px-3 py-2.5 font-medium">ราคา</th>
+                  )}
+                  <th className="text-center px-3 py-2.5 font-medium">หมวด</th>
+                  <th className="text-right px-3 py-2.5 font-medium">Remain</th>
+                </tr>
+              </thead>
+              <tbody>
+                {filtered.map((r, i) => {
+                  const meta = CATEGORY_META[r.category];
+                  const tones = {
+                    indigo: "bg-indigo-100 text-indigo-700",
+                    rose: "bg-rose-100 text-rose-700",
+                    amber: "bg-amber-100 text-amber-700",
+                    slate: "bg-slate-100 text-slate-700",
+                  };
+                  return (
+                    <tr
+                      key={r.item.itemNo}
+                      className={`border-t border-slate-100 hover:bg-slate-50/50 ${
+                        r.remain <= 0 ? "opacity-50" : ""
+                      }`}
+                    >
+                      <td className="px-3 py-2 text-xs text-slate-400">{i + 1}</td>
+                      <td className="px-3 py-2 font-mono text-xs font-semibold">
+                        {r.item.itemNo}
+                      </td>
+                      <td className="px-3 py-2">
+                        <div className="text-sm text-slate-800 truncate max-w-md">
+                          {r.item.description}
+                        </div>
+                        {r.item.description2 && (
+                          <div className="text-[10px] text-slate-500 truncate max-w-md">
+                            {r.item.description2}
+                          </div>
+                        )}
+                      </td>
+                      <td className="px-3 py-2 text-xs text-slate-500">
+                        {r.item.baseUom || "—"}
+                      </td>
+                      {category === "gift" && (
+                        <td className="px-3 py-2 text-right text-xs">
+                          {r.item.unitPrice ? (
+                            <span className="font-mono">
+                              {Number(r.item.unitPrice).toLocaleString()}฿
+                            </span>
+                          ) : (
+                            <span className="text-slate-400">—</span>
+                          )}
+                        </td>
+                      )}
+                      <td className="px-3 py-2 text-center">
+                        <span
+                          className={`text-[9px] font-bold uppercase tracking-wide px-1.5 py-0.5 rounded ${tones[meta.tone]}`}
+                        >
+                          {meta.short}
+                        </span>
+                      </td>
+                      <td
+                        className={`px-3 py-2 text-right font-extrabold ${
+                          r.remain > 0 ? "text-slate-900" : "text-slate-400"
+                        }`}
+                      >
+                        {r.remain}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+              <tfoot>
+                <tr className="bg-slate-50 border-t-2 border-slate-200">
+                  <td colSpan={category === "gift" ? 6 : 5} className="px-3 py-2 text-xs text-slate-500">
+                    รวม {filtered.length} รายการ
+                  </td>
+                  <td className="px-3 py-2 text-right font-extrabold text-slate-900">
+                    {filtered.reduce((a, r) => a + r.remain, 0)}
+                  </td>
+                </tr>
+              </tfoot>
+            </table>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ============================================================
+// Count Section — scan + record (same as original PreCount flow)
+// ============================================================
+
 type Toast = { id: number; kind: "ok" | "warn" | "err"; text: string };
 type ScannedItem = {
   item: Item;
   category: PreCountCategory;
-  remaining: number; // sum of Remaining Quantity across all lots/locations in Ledger
+  remaining: number;
   lots: StockSummary["lots"];
 };
 
-export function PreCount() {
+function CountSection() {
   const inputRef = useRef<HTMLInputElement>(null);
   const ui = useUI();
   const [barcode, setBarcode] = useState("");
@@ -128,12 +420,9 @@ export function PreCount() {
     const stock = await stockForItem(item.itemNo);
     const remaining = stock.lots.reduce((a, l) => a + (l.remaining ?? 0), 0);
     setScanned({ item, category, remaining, lots: stock.lots });
-    // Default qty: 1 if remain allows, else 0
     setQty(remaining > 0 ? 1 : 0);
   }
 
-  // How many of this item are already in the current session — we subtract
-  // this from the Ledger remain to clamp the user's qty input.
   function inSessionFor(itemNo: string): number {
     if (!session) return 0;
     return session.lines
@@ -165,7 +454,7 @@ export function PreCount() {
       return;
     }
     if (qty > maxCanAdd) {
-      pushToast("err", `เกิน Remain ใน Ledger — เพิ่มได้ไม่เกิน ${maxCanAdd}`);
+      pushToast("err", `เกิน Remain — เพิ่มได้ไม่เกิน ${maxCanAdd}`);
       return;
     }
     const s = await ensureSession();
@@ -174,10 +463,7 @@ export function PreCount() {
       return;
     }
     const item = scanned.item;
-    // Merge if same item already in session
-    const existing = s.lines.findIndex(
-      (l) => l.itemNo === item.itemNo && !l.lotNo,
-    );
+    const existing = s.lines.findIndex((l) => l.itemNo === item.itemNo && !l.lotNo);
     const newLine: TransferLine = {
       itemNo: item.itemNo,
       description: item.description,
@@ -207,7 +493,6 @@ export function PreCount() {
     if (!session || session.closed) return;
     const target = session.lines[idx];
     if (!target) return;
-    // Cap edits to total Remain across the whole session for this item.
     const stock = await stockForItem(target.itemNo);
     const remaining = stock.lots.reduce((a, l) => a + (l.remaining ?? 0), 0);
     const inSessionExcludingThis = session.lines
@@ -216,9 +501,7 @@ export function PreCount() {
       .reduce((a, l) => a + (l.quantity ?? 0), 0);
     const maxForThis = Math.max(0, remaining - inSessionExcludingThis);
     const clamped = Math.max(0, Math.min(q, maxForThis));
-    if (q > maxForThis) {
-      pushToast("warn", `เกิน Remain — สูงสุดที่แก้ได้คือ ${maxForThis}`);
-    }
+    if (q > maxForThis) pushToast("warn", `เกิน Remain — สูงสุด ${maxForThis}`);
     const lines = session.lines.map((l, i) =>
       i === idx ? { ...l, quantity: clamped } : l,
     );
@@ -265,62 +548,17 @@ export function PreCount() {
     await refreshSessions();
   }
 
-  // Stats
-  const stats = (() => {
-    const allLines = sessions.flatMap((s) => s.lines);
-    const demo = allLines.filter((l) => l.precountCategory === "demo").reduce((a, l) => a + l.quantity, 0);
-    const gift = allLines.filter((l) => l.precountCategory === "gift").reduce((a, l) => a + l.quantity, 0);
-    const giftPaid = allLines.filter((l) => l.precountCategory === "gift-paid").reduce((a, l) => a + l.quantity, 0);
-    return {
-      total: sessions.length,
-      open: sessions.filter((s) => !s.closed).length,
-      closed: sessions.filter((s) => s.closed).length,
-      demo,
-      gift,
-      giftPaid,
-    };
-  })();
-
   const sessionStats = session
-    ? (() => {
-        const demo = session.lines.filter((l) => l.precountCategory === "demo").reduce((a, l) => a + l.quantity, 0);
-        const gift = session.lines.filter((l) => l.precountCategory === "gift").reduce((a, l) => a + l.quantity, 0);
-        const giftPaid = session.lines.filter((l) => l.precountCategory === "gift-paid").reduce((a, l) => a + l.quantity, 0);
-        return { demo, gift, giftPaid, totalLines: session.lines.length };
-      })()
+    ? {
+        demo: session.lines.filter((l) => l.precountCategory === "demo").reduce((a, l) => a + l.quantity, 0),
+        gift: session.lines.filter((l) => l.precountCategory === "gift").reduce((a, l) => a + l.quantity, 0),
+        giftPaid: session.lines.filter((l) => l.precountCategory === "gift-paid").reduce((a, l) => a + l.quantity, 0),
+        totalLines: session.lines.length,
+      }
     : null;
 
   return (
     <div className="space-y-5">
-      {/* Top stats */}
-      <div className="grid grid-cols-2 md:grid-cols-5 gap-3 no-print">
-        <StatCard label="Session ทั้งหมด" value={stats.total} tone="slate" />
-        <StatCard label="กำลังนับ" value={stats.open} tone="amber" />
-        <StatCard label="Demo (รวม qty)" value={stats.demo} tone="indigo" />
-        <StatCard label="Gift (รวม qty)" value={stats.gift} tone="rose" />
-        <StatCard label="Gift มีมูลค่า" value={stats.giftPaid} tone="amber" />
-      </div>
-
-      {/* Info banner */}
-      <div className="bg-indigo-50/40 border border-indigo-200 rounded-2xl p-4 text-sm text-indigo-900">
-        <div className="flex items-start gap-3">
-          <div className="w-8 h-8 rounded-lg bg-indigo-100 text-indigo-600 grid place-items-center shrink-0">
-            <GiftIcon className="w-4 h-4" />
-          </div>
-          <div className="flex-1">
-            <div className="font-semibold">Pre-count Stock (Demo / Gift)</div>
-            <div className="text-xs text-indigo-800 mt-0.5">
-              สแกน → นับจำนวน → ลงลัง → พิมพ์ใบปะหน้า ของแถม/Demo —{" "}
-              <b>ไม่ลง TO Excel</b> และ <b>ไม่ลง Item Journal</b>
-            </div>
-            <div className="text-[11px] text-indigo-700 mt-1">
-              <b>Demo:</b> Description มี "D7" · <b>Premium Gift:</b> Item Category /
-              Product Group มี "Premium" / "Gift" / "ของแถม" · ราคา &gt; 0 ⇒ ของแถมมีมูลค่า
-            </div>
-          </div>
-        </div>
-      </div>
-
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-5">
         {/* Left: scan */}
         <div className="lg:col-span-7 space-y-5">
@@ -330,7 +568,7 @@ export function PreCount() {
                 <button
                   type="button"
                   onClick={() => setCameraOpen(true)}
-                  className="w-full flex flex-col items-center justify-center gap-2 px-6 py-7 bg-gradient-to-br from-indigo-500 to-indigo-700 text-white rounded-2xl active:scale-[0.98] shadow-lg transition font-bold"
+                  className="w-full flex flex-col items-center justify-center gap-2 px-6 py-7 bg-gradient-to-br from-emerald-500 to-emerald-700 text-white rounded-2xl active:scale-[0.98] shadow-lg transition font-bold"
                 >
                   <ScanIcon className="w-10 h-10" />
                   <span className="text-lg">เปิดกล้องสแกน</span>
@@ -356,14 +594,14 @@ export function PreCount() {
                     onChange={(e) => setBarcode(e.target.value)}
                     onKeyDown={onKey}
                     placeholder="พิมพ์ Barcode หรือ Item No. แล้ว Enter"
-                    className="w-full mt-2 px-4 py-2.5 text-base border-2 border-slate-200 rounded-xl focus:outline-none focus:border-indigo-400 focus:ring-4 focus:ring-indigo-100 transition"
+                    className="w-full mt-2 px-4 py-2.5 text-base border-2 border-slate-200 rounded-xl focus:outline-none focus:border-emerald-400 focus:ring-4 focus:ring-emerald-100 transition"
                   />
                 )}
               </>
             ) : (
               <>
                 <div className="flex items-center gap-3 mb-3">
-                  <div className="w-8 h-8 rounded-lg bg-indigo-50 text-indigo-600 grid place-items-center">
+                  <div className="w-8 h-8 rounded-lg bg-emerald-50 text-emerald-600 grid place-items-center">
                     <ScanIcon className="w-4 h-4" />
                   </div>
                   <div>
@@ -381,7 +619,7 @@ export function PreCount() {
                   onChange={(e) => setBarcode(e.target.value)}
                   onKeyDown={onKey}
                   placeholder="เช่น 8852796203248 หรือ D21320006"
-                  className="w-full px-4 py-3 text-lg font-medium border-2 border-slate-200 rounded-xl focus:outline-none focus:border-indigo-400 focus:ring-4 focus:ring-indigo-100 transition"
+                  className="w-full px-4 py-3 text-lg font-medium border-2 border-slate-200 rounded-xl focus:outline-none focus:border-emerald-400 focus:ring-4 focus:ring-emerald-100 transition"
                 />
               </>
             )}
@@ -405,7 +643,6 @@ export function PreCount() {
                 <CategoryBadge category={scanned.category} unitPrice={scanned.item.unitPrice} />
               </div>
 
-              {/* Ledger Remain panel */}
               <div className="grid grid-cols-3 gap-2 mb-3">
                 <div className="rounded-lg border border-slate-200 bg-slate-50 px-2 py-1.5">
                   <div className="text-[9px] uppercase tracking-wide font-semibold text-slate-500">
@@ -460,12 +697,6 @@ export function PreCount() {
                 </div>
               )}
 
-              {maxCanAdd === 0 && scanned.remaining > 0 && (
-                <div className="mb-3 text-[11px] text-amber-800 bg-amber-50 border border-amber-200 rounded-lg p-2">
-                  เพิ่มครบ Remain แล้ว — แก้จำนวนใน Session ถ้าต้องการลด
-                </div>
-              )}
-
               <div className="flex items-end gap-3">
                 <div>
                   <div className="flex items-baseline justify-between mb-1">
@@ -481,7 +712,7 @@ export function PreCount() {
                       type="button"
                       onClick={() => setQty(Math.max(1, qty - 1))}
                       disabled={qty <= 1}
-                      className="w-9 h-9 rounded-full bg-slate-100 hover:bg-slate-200 active:scale-95 text-lg font-bold text-slate-700 disabled:opacity-30 disabled:cursor-not-allowed"
+                      className="w-9 h-9 rounded-full bg-slate-100 hover:bg-slate-200 active:scale-95 text-lg font-bold text-slate-700 disabled:opacity-30"
                     >
                       −
                     </button>
@@ -496,13 +727,13 @@ export function PreCount() {
                         setQty(Math.max(0, Math.min(v, maxCanAdd)));
                       }}
                       disabled={maxCanAdd <= 0}
-                      className="w-20 text-center text-2xl font-extrabold border-2 border-slate-200 rounded-xl py-1.5 focus:outline-none focus:border-indigo-400 focus:ring-2 focus:ring-indigo-100 disabled:bg-slate-100 disabled:text-slate-400"
+                      className="w-20 text-center text-2xl font-extrabold border-2 border-slate-200 rounded-xl py-1.5 focus:outline-none focus:border-emerald-400 focus:ring-2 focus:ring-emerald-100 disabled:bg-slate-100 disabled:text-slate-400"
                     />
                     <button
                       type="button"
                       onClick={() => setQty(Math.min(maxCanAdd, qty + 1))}
                       disabled={qty >= maxCanAdd}
-                      className="w-9 h-9 rounded-full bg-slate-100 hover:bg-slate-200 active:scale-95 text-lg font-bold text-slate-700 disabled:opacity-30 disabled:cursor-not-allowed"
+                      className="w-9 h-9 rounded-full bg-slate-100 hover:bg-slate-200 active:scale-95 text-lg font-bold text-slate-700 disabled:opacity-30"
                     >
                       +
                     </button>
@@ -512,7 +743,7 @@ export function PreCount() {
                       type="button"
                       onClick={() => setQty(maxCanAdd)}
                       disabled={maxCanAdd <= 0}
-                      className="px-1.5 py-0.5 text-[10px] font-semibold bg-white border border-indigo-200 text-indigo-700 rounded hover:bg-indigo-50 disabled:opacity-30"
+                      className="px-1.5 py-0.5 text-[10px] font-semibold bg-white border border-emerald-200 text-emerald-700 rounded hover:bg-emerald-50 disabled:opacity-30"
                     >
                       max ({maxCanAdd})
                     </button>
@@ -521,7 +752,7 @@ export function PreCount() {
                 <button
                   onClick={addToSession}
                   disabled={maxCanAdd <= 0 || qty <= 0}
-                  className="flex-1 flex items-center justify-center gap-2 px-4 py-3 bg-gradient-to-br from-indigo-500 to-indigo-700 text-white text-sm font-semibold rounded-xl active:scale-95 shadow-md transition disabled:opacity-40 disabled:cursor-not-allowed disabled:from-slate-400 disabled:to-slate-500"
+                  className="flex-1 flex items-center justify-center gap-2 px-4 py-3 bg-gradient-to-br from-emerald-500 to-emerald-700 text-white text-sm font-semibold rounded-xl active:scale-95 shadow-md transition disabled:opacity-40 disabled:cursor-not-allowed disabled:from-slate-400 disabled:to-slate-500"
                 >
                   <PlusIcon /> ลงในลัง
                 </button>
@@ -552,7 +783,7 @@ export function PreCount() {
               {!session ? (
                 <button
                   onClick={newSession}
-                  className="flex items-center gap-1 px-3 py-1.5 bg-indigo-600 text-white text-sm rounded-lg hover:bg-indigo-700 shadow-sm transition"
+                  className="flex items-center gap-1 px-3 py-1.5 bg-emerald-600 text-white text-sm rounded-lg hover:bg-emerald-700 shadow-sm transition"
                 >
                   <PlusIcon /> Session ใหม่
                 </button>
@@ -560,7 +791,7 @@ export function PreCount() {
                 <button
                   onClick={closeSession}
                   disabled={session.lines.length === 0}
-                  className="flex items-center gap-1 px-3 py-1.5 bg-slate-900 text-white text-sm rounded-lg hover:bg-slate-800 disabled:opacity-30 disabled:cursor-not-allowed shadow-sm transition"
+                  className="flex items-center gap-1 px-3 py-1.5 bg-slate-900 text-white text-sm rounded-lg hover:bg-slate-800 disabled:opacity-30 shadow-sm transition"
                 >
                   <LockIcon className="w-3.5 h-3.5" /> ปิด + พิมพ์
                 </button>
@@ -607,7 +838,7 @@ export function PreCount() {
         </div>
       </div>
 
-      {/* Past sessions list */}
+      {/* Past sessions */}
       {sessions.length > 0 && (
         <div className="bg-white border border-slate-200/70 rounded-2xl overflow-hidden">
           <div className="px-4 py-3 border-b border-slate-100">
@@ -708,6 +939,10 @@ export function PreCount() {
   );
 }
 
+// ============================================================
+// Shared small components
+// ============================================================
+
 function CategoryBadge({
   category,
   unitPrice,
@@ -724,9 +959,7 @@ function CategoryBadge({
   };
   return (
     <div className="text-right shrink-0">
-      <span
-        className={`inline-block px-2 py-0.5 text-[10px] font-bold rounded uppercase tracking-widest ${tones[meta.tone]}`}
-      >
+      <span className={`inline-block px-2 py-0.5 text-[10px] font-bold rounded uppercase tracking-widest ${tones[meta.tone]}`}>
         {meta.short}
       </span>
       <div className="text-[10px] text-slate-500 mt-0.5">{meta.label}</div>
@@ -751,17 +984,23 @@ function SessionLineRow({
   const cat = (line.precountCategory ?? "normal") as PreCountCategory;
   const meta = CATEGORY_META[cat];
   const tones = {
-    indigo: "bg-indigo-100 text-indigo-700 border-indigo-200",
-    rose: "bg-rose-100 text-rose-700 border-rose-200",
-    amber: "bg-amber-100 text-amber-700 border-amber-200",
-    slate: "bg-slate-100 text-slate-700 border-slate-200",
+    indigo: "border-indigo-200 bg-indigo-50/40",
+    rose: "border-rose-200 bg-rose-50/40",
+    amber: "border-amber-200 bg-amber-50/40",
+    slate: "border-slate-200 bg-slate-50/40",
+  };
+  const badgeTones = {
+    indigo: "bg-indigo-600 text-white",
+    rose: "bg-rose-500 text-white",
+    amber: "bg-amber-500 text-white",
+    slate: "bg-slate-400 text-white",
   };
   return (
-    <div className={`text-sm rounded-lg p-2.5 border ${tones[meta.tone]} bg-opacity-30`}>
+    <div className={`text-sm rounded-lg p-2.5 border ${tones[meta.tone]}`}>
       <div className="flex justify-between gap-2 items-start">
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-1.5 flex-wrap">
-            <span className={`text-[9px] font-bold uppercase tracking-wide px-1.5 py-0.5 rounded ${meta.tone === "indigo" ? "bg-indigo-600 text-white" : meta.tone === "rose" ? "bg-rose-500 text-white" : meta.tone === "amber" ? "bg-amber-500 text-white" : "bg-slate-400 text-white"}`}>
+            <span className={`text-[9px] font-bold uppercase tracking-wide px-1.5 py-0.5 rounded ${badgeTones[meta.tone]}`}>
               {meta.short}
             </span>
             <span className="font-mono text-xs font-semibold text-slate-800">{line.itemNo}</span>
@@ -810,13 +1049,9 @@ function StatCard({
     rose: "from-rose-50 to-white border-rose-200 text-rose-700",
   };
   return (
-    <div
-      className={`bg-gradient-to-br ${tones[tone]} border rounded-2xl p-4 shadow-[0_1px_2px_rgba(15,23,42,0.04)]`}
-    >
-      <div className="text-[11px] uppercase tracking-wide font-semibold opacity-70">
-        {label}
-      </div>
-      <div className="text-2xl font-extrabold mt-0.5">{value}</div>
+    <div className={`bg-gradient-to-br ${tones[tone]} border rounded-2xl p-4 shadow-[0_1px_2px_rgba(15,23,42,0.04)]`}>
+      <div className="text-[11px] uppercase tracking-wide font-semibold opacity-70">{label}</div>
+      <div className="text-2xl font-extrabold mt-0.5">{value.toLocaleString()}</div>
     </div>
   );
 }
@@ -901,7 +1136,6 @@ function PreCountPrintModal({
               <p className="text-xs opacity-90 mt-0.5">ใบปะหน้า Pre-count Demo / Gift</p>
             </div>
           </div>
-
           <div className="p-5 space-y-3">
             <div className="text-center">
               <div className="text-[10px] uppercase tracking-widest text-slate-500 font-semibold">
@@ -911,7 +1145,6 @@ function PreCountPrintModal({
                 {t.id}
               </div>
             </div>
-
             <div className="space-y-2 pt-1">
               <button
                 onClick={doPrint}
@@ -942,7 +1175,6 @@ function PreCountPrintModal({
           </div>
         </div>
       </div>
-
       <div
         ref={coverRef}
         id="print-area"

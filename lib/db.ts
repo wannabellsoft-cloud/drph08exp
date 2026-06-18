@@ -221,6 +221,80 @@ export async function listPreCountSessions(): Promise<Transfer[]> {
   return (data ?? []) as Transfer[];
 }
 
+// Rough server-side filter for browsing the Pre-count catalogue. Returns
+// items that might be Demo or Gift; the caller still runs classifyItem to
+// confirm. Paginated through Supabase's 1000-row cap.
+export async function listItemsByCategoryRough(
+  category: "demo" | "gift",
+): Promise<Item[]> {
+  const all: Item[] = [];
+  const PAGE = 1000;
+  let from = 0;
+  while (true) {
+    let q = sb().from(T_ITEMS).select("*");
+    if (category === "demo") {
+      q = q.or("description.ilike.%D7%,description2.ilike.%D7%");
+    } else {
+      // Gift heuristic — any of the gift keywords in category / group /
+      // description fields.
+      q = q.or(
+        [
+          "itemCategoryDes.ilike.%premium%",
+          "itemCategoryDes.ilike.%gift%",
+          "itemCategoryDes.ilike.%ของแถม%",
+          "itemCategoryDes.ilike.%แถม%",
+          "productGroupDes.ilike.%premium%",
+          "productGroupDes.ilike.%gift%",
+          "productGroupDes.ilike.%ของแถม%",
+          "productGroupDes.ilike.%แถม%",
+          "description.ilike.%premium%",
+          "description.ilike.%gift%",
+          "description.ilike.%ของแถม%",
+        ].join(","),
+      );
+    }
+    const { data, error } = await q.range(from, from + PAGE - 1);
+    if (error) throw error;
+    const chunk = (data ?? []) as Item[];
+    all.push(...chunk);
+    if (chunk.length < PAGE) break;
+    from += PAGE;
+  }
+  return all;
+}
+
+// Map of itemNo → total Remaining Quantity in Ledger, via RPC. Falls back
+// to a single-table scan when the RPC isn't deployed yet.
+export async function fetchRemainTotals(): Promise<Map<string, number>> {
+  const map = new Map<string, number>();
+  const r = await sb().rpc("item_remain_total");
+  if (!r.error && Array.isArray(r.data)) {
+    for (const row of r.data as Array<{ itemNo: string; total: number }>) {
+      if (row?.itemNo) map.set(row.itemNo, Number(row.total) || 0);
+    }
+    return map;
+  }
+  // Fallback — sum client-side. Paginates so we don't get truncated at 1000.
+  const PAGE = 1000;
+  let from = 0;
+  while (true) {
+    const { data, error } = await sb()
+      .from(T_LEDGER)
+      .select("itemNo, remainingQuantity")
+      .gt("remainingQuantity", 0)
+      .range(from, from + PAGE - 1);
+    if (error) throw error;
+    const chunk = (data ?? []) as Array<{ itemNo: string; remainingQuantity: number }>;
+    for (const row of chunk) {
+      const cur = map.get(row.itemNo) ?? 0;
+      map.set(row.itemNo, cur + (Number(row.remainingQuantity) || 0));
+    }
+    if (chunk.length < PAGE) break;
+    from += PAGE;
+  }
+  return map;
+}
+
 export async function deleteTransferRaw(id: string) {
   // For precount sessions — no journal cascade, no reservation revert
   const { error } = await sb().from(T_TRANSFERS).delete().eq("id", id);

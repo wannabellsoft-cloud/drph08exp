@@ -99,6 +99,17 @@ returns setof text language sql as $$
   where "documentNo" is not null and "documentNo" <> '';
 $$;
 
+-- Sum of Remaining Quantity per Item No. across the whole Ledger. Used by
+-- the Pre-count "Demo" and "Gift" browse tabs to show every catalogue item
+-- alongside its current store-level remain in a single round-trip.
+create or replace function item_remain_total()
+returns table("itemNo" text, total numeric) language sql stable as $$
+  select "itemNo", sum("remainingQuantity")::numeric as total
+  from ledger
+  where "remainingQuantity" > 0 and "itemNo" is not null
+  group by "itemNo";
+$$;
+
 create or replace function truncate_items()     returns void language sql as $$ truncate items;     $$;
 create or replace function truncate_ledger()    returns void language sql as $$ truncate ledger;    $$;
 create or replace function truncate_transfers() returns void language sql as $$ truncate transfers; $$;
