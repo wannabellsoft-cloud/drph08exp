@@ -1,0 +1,839 @@
+"use client";
+import { useEffect, useRef, useState } from "react";
+import dynamic from "next/dynamic";
+import {
+  findItemByBarcode,
+  saveTransfer,
+  getTransfer,
+  listPreCountSessions,
+  deleteTransferRaw,
+} from "@/lib/db";
+import type { Item, Transfer, TransferLine, PreCountCategory } from "@/lib/types";
+import { classifyItem, CATEGORY_META } from "@/lib/itemClassify";
+import { useUI } from "./UI";
+import { PreCountCoverSheet } from "./PreCountCoverSheet";
+import { elementToPdfBlob, shareOrDownloadBlob } from "@/lib/pdf";
+import {
+  ScanIcon,
+  PlusIcon,
+  LockIcon,
+  TrashIcon,
+  CheckIcon,
+  GiftIcon,
+  PrintIcon,
+  ShareIcon,
+} from "./Icons";
+
+const CameraScanner = dynamic(
+  () => import("./CameraScanner").then((m) => m.CameraScanner),
+  { ssr: false },
+);
+
+const STORE = "60008";
+const PRECOUNT_SESSION_KEY = "precount_session_id";
+
+function uid(prefix = "PC") {
+  return prefix + "-" + Date.now().toString(36) + "-" + Math.random().toString(36).slice(2, 6);
+}
+
+type Toast = { id: number; kind: "ok" | "warn" | "err"; text: string };
+type ScannedItem = { item: Item; category: PreCountCategory };
+
+export function PreCount() {
+  const inputRef = useRef<HTMLInputElement>(null);
+  const ui = useUI();
+  const [barcode, setBarcode] = useState("");
+  const [scanned, setScanned] = useState<ScannedItem | null>(null);
+  const [notFound, setNotFound] = useState("");
+  const [qty, setQty] = useState(1);
+  const [session, setSession] = useState<Transfer | null>(null);
+  const [sessions, setSessions] = useState<Transfer[]>([]);
+  const [cameraOpen, setCameraOpen] = useState(false);
+  const [isMobile, setIsMobile] = useState(false);
+  const [manualMode, setManualMode] = useState(false);
+  const [printing, setPrinting] = useState<Transfer | null>(null);
+  const [toasts, setToasts] = useState<Toast[]>([]);
+
+  function pushToast(kind: Toast["kind"], text: string) {
+    const id = Date.now() + Math.random();
+    setToasts((ts) => [...ts, { id, kind, text }]);
+    setTimeout(() => setToasts((ts) => ts.filter((t) => t.id !== id)), 3000);
+  }
+
+  async function refreshSessions() {
+    setSessions(await listPreCountSessions());
+  }
+
+  useEffect(() => {
+    let mobile = false;
+    try {
+      const ua = navigator.userAgent || "";
+      mobile =
+        /Android|iPhone|iPad|iPod|Mobile/i.test(ua) ||
+        (typeof window.matchMedia === "function" &&
+          window.matchMedia("(pointer: coarse)").matches);
+    } catch {}
+    setIsMobile(mobile);
+    if (!mobile) inputRef.current?.focus();
+    (async () => {
+      const sid = localStorage.getItem(PRECOUNT_SESSION_KEY);
+      if (sid) {
+        const t = await getTransfer(sid);
+        if (t && t.type === "precount" && !t.closed) setSession(t);
+      }
+      await refreshSessions();
+    })();
+  }, []);
+
+  async function ensureSession(): Promise<Transfer> {
+    if (session && !session.closed) return session;
+    const t: Transfer = {
+      id: uid("PC"),
+      storeFrom: STORE,
+      locationFrom: STORE,
+      storeTo: STORE,
+      locationTo: STORE,
+      createdAt: new Date().toISOString(),
+      closed: false,
+      lines: [],
+      type: "precount",
+    };
+    await saveTransfer(t);
+    localStorage.setItem(PRECOUNT_SESSION_KEY, t.id);
+    setSession(t);
+    return t;
+  }
+
+  async function newSession() {
+    await ensureSession();
+  }
+
+  async function lookup(code: string) {
+    const c = code.trim();
+    if (!c) return;
+    setNotFound("");
+    setScanned(null);
+    const item = await findItemByBarcode(c);
+    if (!item) {
+      setNotFound(`ไม่พบสินค้าสำหรับ "${c}"`);
+      return;
+    }
+    const category = classifyItem(item);
+    setScanned({ item, category });
+    setQty(1);
+  }
+
+  function onKey(e: React.KeyboardEvent<HTMLInputElement>) {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      lookup(barcode);
+      setBarcode("");
+    }
+  }
+
+  async function onCameraResult(code: string) {
+    setCameraOpen(false);
+    await lookup(code);
+  }
+
+  async function addToSession() {
+    if (!scanned) return;
+    if (qty <= 0) {
+      pushToast("err", "จำนวนต้องมากกว่า 0");
+      return;
+    }
+    const s = await ensureSession();
+    if (s.closed) {
+      pushToast("err", "Session นี้ปิดแล้ว");
+      return;
+    }
+    const item = scanned.item;
+    // Merge if same item already in session
+    const existing = s.lines.findIndex(
+      (l) => l.itemNo === item.itemNo && !l.lotNo,
+    );
+    const newLine: TransferLine = {
+      itemNo: item.itemNo,
+      description: item.description,
+      quantity: qty,
+      lotNo: "",
+      uom: item.baseUom,
+      alreadyExp: false,
+      precountCategory: scanned.category,
+      unitPrice: item.unitPrice,
+    };
+    const lines = [...s.lines];
+    if (existing >= 0) {
+      lines[existing] = { ...lines[existing], quantity: lines[existing].quantity + qty };
+    } else {
+      lines.push(newLine);
+    }
+    const next = { ...s, lines };
+    await saveTransfer(next);
+    setSession(next);
+    setScanned(null);
+    setBarcode("");
+    pushToast("ok", `เพิ่ม ${qty} ${item.baseUom ?? ""}`);
+    if (!isMobile) inputRef.current?.focus();
+  }
+
+  async function updateLineQty(idx: number, q: number) {
+    if (!session || session.closed) return;
+    const lines = session.lines.map((l, i) =>
+      i === idx ? { ...l, quantity: Math.max(0, q) } : l,
+    );
+    const next = { ...session, lines };
+    await saveTransfer(next);
+    setSession(next);
+  }
+
+  async function removeLine(idx: number) {
+    if (!session || session.closed) return;
+    const lines = session.lines.filter((_, i) => i !== idx);
+    const next = { ...session, lines };
+    await saveTransfer(next);
+    setSession(next);
+  }
+
+  async function closeSession() {
+    if (!session) return;
+    if (session.lines.length === 0) {
+      pushToast("warn", "Session ยังไม่มีรายการ");
+      return;
+    }
+    const next: Transfer = {
+      ...session,
+      closed: true,
+      closedAt: new Date().toISOString(),
+    };
+    await saveTransfer(next);
+    localStorage.removeItem(PRECOUNT_SESSION_KEY);
+    setSession(null);
+    await refreshSessions();
+    setPrinting(next);
+  }
+
+  async function removeSession(t: Transfer) {
+    const yes = await ui.confirm({
+      title: "ลบ Session นี้?",
+      message: "Session การ Pre-count นี้จะถูกลบถาวร",
+      danger: true,
+      confirmText: "ลบ",
+    });
+    if (!yes) return;
+    await deleteTransferRaw(t.id);
+    await refreshSessions();
+  }
+
+  // Stats
+  const stats = (() => {
+    const allLines = sessions.flatMap((s) => s.lines);
+    const demo = allLines.filter((l) => l.precountCategory === "demo").reduce((a, l) => a + l.quantity, 0);
+    const gift = allLines.filter((l) => l.precountCategory === "gift").reduce((a, l) => a + l.quantity, 0);
+    const giftPaid = allLines.filter((l) => l.precountCategory === "gift-paid").reduce((a, l) => a + l.quantity, 0);
+    return {
+      total: sessions.length,
+      open: sessions.filter((s) => !s.closed).length,
+      closed: sessions.filter((s) => s.closed).length,
+      demo,
+      gift,
+      giftPaid,
+    };
+  })();
+
+  const sessionStats = session
+    ? (() => {
+        const demo = session.lines.filter((l) => l.precountCategory === "demo").reduce((a, l) => a + l.quantity, 0);
+        const gift = session.lines.filter((l) => l.precountCategory === "gift").reduce((a, l) => a + l.quantity, 0);
+        const giftPaid = session.lines.filter((l) => l.precountCategory === "gift-paid").reduce((a, l) => a + l.quantity, 0);
+        return { demo, gift, giftPaid, totalLines: session.lines.length };
+      })()
+    : null;
+
+  return (
+    <div className="space-y-5">
+      {/* Top stats */}
+      <div className="grid grid-cols-2 md:grid-cols-5 gap-3 no-print">
+        <StatCard label="Session ทั้งหมด" value={stats.total} tone="slate" />
+        <StatCard label="กำลังนับ" value={stats.open} tone="amber" />
+        <StatCard label="Demo (รวม qty)" value={stats.demo} tone="indigo" />
+        <StatCard label="Gift (รวม qty)" value={stats.gift} tone="rose" />
+        <StatCard label="Gift มีมูลค่า" value={stats.giftPaid} tone="amber" />
+      </div>
+
+      {/* Info banner */}
+      <div className="bg-indigo-50/40 border border-indigo-200 rounded-2xl p-4 text-sm text-indigo-900">
+        <div className="flex items-start gap-3">
+          <div className="w-8 h-8 rounded-lg bg-indigo-100 text-indigo-600 grid place-items-center shrink-0">
+            <GiftIcon className="w-4 h-4" />
+          </div>
+          <div className="flex-1">
+            <div className="font-semibold">Pre-count Stock (Demo / Gift)</div>
+            <div className="text-xs text-indigo-800 mt-0.5">
+              สแกน → นับจำนวน → ลงลัง → พิมพ์ใบปะหน้า ของแถม/Demo —{" "}
+              <b>ไม่ลง TO Excel</b> และ <b>ไม่ลง Item Journal</b>
+            </div>
+            <div className="text-[11px] text-indigo-700 mt-1">
+              <b>Demo:</b> Description มี "D7" · <b>Premium Gift:</b> Item Category /
+              Product Group มี "Premium" / "Gift" / "ของแถม" · ราคา &gt; 0 ⇒ ของแถมมีมูลค่า
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-1 lg:grid-cols-12 gap-5">
+        {/* Left: scan */}
+        <div className="lg:col-span-7 space-y-5">
+          <div className="bg-white border border-slate-200/70 rounded-2xl p-5 shadow-[0_1px_2px_rgba(15,23,42,0.04)]">
+            {isMobile ? (
+              <>
+                <button
+                  type="button"
+                  onClick={() => setCameraOpen(true)}
+                  className="w-full flex flex-col items-center justify-center gap-2 px-6 py-7 bg-gradient-to-br from-indigo-500 to-indigo-700 text-white rounded-2xl active:scale-[0.98] shadow-lg transition font-bold"
+                >
+                  <ScanIcon className="w-10 h-10" />
+                  <span className="text-lg">เปิดกล้องสแกน</span>
+                  <span className="text-[11px] font-normal opacity-90">
+                    Demo / Premium Gift
+                  </span>
+                </button>
+                {!manualMode ? (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setManualMode(true);
+                      setTimeout(() => inputRef.current?.focus(), 50);
+                    }}
+                    className="w-full mt-2 text-xs text-slate-500 hover:text-slate-700 py-1"
+                  >
+                    หรือ พิมพ์ Barcode / Item No. เอง
+                  </button>
+                ) : (
+                  <input
+                    ref={inputRef}
+                    value={barcode}
+                    onChange={(e) => setBarcode(e.target.value)}
+                    onKeyDown={onKey}
+                    placeholder="พิมพ์ Barcode หรือ Item No. แล้ว Enter"
+                    className="w-full mt-2 px-4 py-2.5 text-base border-2 border-slate-200 rounded-xl focus:outline-none focus:border-indigo-400 focus:ring-4 focus:ring-indigo-100 transition"
+                  />
+                )}
+              </>
+            ) : (
+              <>
+                <div className="flex items-center gap-3 mb-3">
+                  <div className="w-8 h-8 rounded-lg bg-indigo-50 text-indigo-600 grid place-items-center">
+                    <ScanIcon className="w-4 h-4" />
+                  </div>
+                  <div>
+                    <div className="text-sm font-semibold text-slate-900">
+                      Scan Barcode / Item No.
+                    </div>
+                    <div className="text-xs text-slate-500">
+                      ยิงบาร์โค้ดหรือพิมพ์รหัสแล้วกด Enter
+                    </div>
+                  </div>
+                </div>
+                <input
+                  ref={inputRef}
+                  value={barcode}
+                  onChange={(e) => setBarcode(e.target.value)}
+                  onKeyDown={onKey}
+                  placeholder="เช่น 8852796203248 หรือ D21320006"
+                  className="w-full px-4 py-3 text-lg font-medium border-2 border-slate-200 rounded-xl focus:outline-none focus:border-indigo-400 focus:ring-4 focus:ring-indigo-100 transition"
+                />
+              </>
+            )}
+            {notFound && (
+              <div className="mt-3 px-3 py-2 bg-rose-50 text-rose-700 text-sm rounded-lg border border-rose-200">
+                {notFound}
+              </div>
+            )}
+          </div>
+
+          {scanned && (
+            <div className="bg-white border border-slate-200/70 rounded-2xl p-5 shadow-[0_1px_2px_rgba(15,23,42,0.04)]">
+              <div className="flex items-start justify-between gap-3 mb-3 pb-3 border-b border-slate-100">
+                <div className="min-w-0 flex-1">
+                  <div className="text-[11px] text-slate-400 font-mono">{scanned.item.barcode}</div>
+                  <div className="text-xs text-slate-500 font-mono">{scanned.item.itemNo}</div>
+                  <div className="font-semibold text-slate-900 text-base mt-0.5">
+                    {scanned.item.description}
+                  </div>
+                </div>
+                <CategoryBadge category={scanned.category} unitPrice={scanned.item.unitPrice} />
+              </div>
+
+              {scanned.category === "normal" && (
+                <div className="mb-3 text-[11px] text-amber-800 bg-amber-50 border border-amber-200 rounded-lg p-2">
+                  ⚠ สินค้านี้ไม่ใช่ Demo หรือ Premium Gift —
+                  ถ้าจะเพิ่มต่อ ระบบจะใส่หมวด "ปกติ" ให้
+                </div>
+              )}
+
+              <div className="flex items-end gap-3">
+                <div>
+                  <div className="text-[10px] uppercase tracking-wide font-semibold text-slate-500 mb-1">
+                    จำนวน
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setQty(Math.max(1, qty - 1))}
+                      className="w-9 h-9 rounded-full bg-slate-100 hover:bg-slate-200 active:scale-95 text-lg font-bold text-slate-700"
+                    >
+                      −
+                    </button>
+                    <input
+                      type="number"
+                      min={1}
+                      value={qty}
+                      onChange={(e) => setQty(Math.max(1, parseInt(e.target.value || "1", 10)))}
+                      className="w-20 text-center text-2xl font-extrabold border-2 border-slate-200 rounded-xl py-1.5 focus:outline-none focus:border-indigo-400 focus:ring-2 focus:ring-indigo-100"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setQty(qty + 1)}
+                      className="w-9 h-9 rounded-full bg-slate-100 hover:bg-slate-200 active:scale-95 text-lg font-bold text-slate-700"
+                    >
+                      +
+                    </button>
+                  </div>
+                </div>
+                <button
+                  onClick={addToSession}
+                  className="flex-1 flex items-center justify-center gap-2 px-4 py-3 bg-gradient-to-br from-indigo-500 to-indigo-700 text-white text-sm font-semibold rounded-xl active:scale-95 shadow-md transition"
+                >
+                  <PlusIcon /> ลงในลัง
+                </button>
+              </div>
+            </div>
+          )}
+
+          {!scanned && !notFound && (
+            <div className="bg-white border border-slate-200/70 rounded-2xl p-12 text-center">
+              <ScanIcon className="w-10 h-10 mx-auto text-slate-300" />
+              <div className="text-sm text-slate-400 mt-2">
+                ยังไม่มีการสแกน — ยิงบาร์โค้ดเพื่อค้นหาสินค้า
+              </div>
+            </div>
+          )}
+        </div>
+
+        {/* Right: active session */}
+        <div className="lg:col-span-5">
+          <div className="sticky top-20 bg-white border border-slate-200/70 rounded-2xl p-5 shadow-[0_1px_2px_rgba(15,23,42,0.04)]">
+            <div className="flex justify-between items-start mb-3">
+              <div>
+                <div className="text-sm font-semibold text-slate-900">Session ที่กำลังนับ</div>
+                {session && (
+                  <div className="text-[11px] text-slate-400 font-mono mt-0.5">{session.id}</div>
+                )}
+              </div>
+              {!session ? (
+                <button
+                  onClick={newSession}
+                  className="flex items-center gap-1 px-3 py-1.5 bg-indigo-600 text-white text-sm rounded-lg hover:bg-indigo-700 shadow-sm transition"
+                >
+                  <PlusIcon /> Session ใหม่
+                </button>
+              ) : (
+                <button
+                  onClick={closeSession}
+                  disabled={session.lines.length === 0}
+                  className="flex items-center gap-1 px-3 py-1.5 bg-slate-900 text-white text-sm rounded-lg hover:bg-slate-800 disabled:opacity-30 disabled:cursor-not-allowed shadow-sm transition"
+                >
+                  <LockIcon className="w-3.5 h-3.5" /> ปิด + พิมพ์
+                </button>
+              )}
+            </div>
+
+            {session && sessionStats && (
+              <div className="grid grid-cols-3 gap-2 mb-3">
+                <Stat label="Demo" value={sessionStats.demo} tone="indigo" />
+                <Stat label="Gift" value={sessionStats.gift} tone="rose" />
+                <Stat label="Gift $" value={sessionStats.giftPaid} tone="amber" />
+              </div>
+            )}
+
+            {session ? (
+              session.lines.length === 0 ? (
+                <div className="text-sm text-slate-400 italic text-center py-8 border border-dashed border-slate-200 rounded-lg">
+                  ยังไม่มีรายการ
+                </div>
+              ) : (
+                <div className="space-y-1.5 max-h-[55vh] overflow-y-auto scroll-thin -mx-1 px-1">
+                  {session.lines.map((l, i) => (
+                    <SessionLineRow
+                      key={i}
+                      line={l}
+                      onChangeQty={(q) => updateLineQty(i, q)}
+                      onRemove={() => removeLine(i)}
+                    />
+                  ))}
+                </div>
+              )
+            ) : (
+              <div className="text-center py-8">
+                <div className="w-12 h-12 mx-auto rounded-full bg-slate-100 grid place-items-center mb-2">
+                  <PlusIcon className="w-5 h-5 text-slate-400" />
+                </div>
+                <div className="text-sm text-slate-500">ยังไม่มี Session กำลังนับ</div>
+                <div className="text-xs text-slate-400 mt-0.5">
+                  กด "Session ใหม่" เพื่อเริ่ม
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+
+      {/* Past sessions list */}
+      {sessions.length > 0 && (
+        <div className="bg-white border border-slate-200/70 rounded-2xl overflow-hidden">
+          <div className="px-4 py-3 border-b border-slate-100">
+            <h2 className="text-sm font-semibold text-slate-900">Sessions ที่บันทึกไว้</h2>
+          </div>
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="bg-slate-50 text-slate-500 text-xs">
+                <th className="text-left px-4 py-2 font-medium">วันที่</th>
+                <th className="text-left px-4 py-2 font-medium">Session ID</th>
+                <th className="text-right px-4 py-2 font-medium">รายการ</th>
+                <th className="text-right px-4 py-2 font-medium">qty</th>
+                <th className="text-center px-4 py-2 font-medium">สถานะ</th>
+                <th className="px-4 py-2"></th>
+              </tr>
+            </thead>
+            <tbody>
+              {sessions.map((s) => {
+                const total = s.lines.reduce((a, l) => a + l.quantity, 0);
+                return (
+                  <tr key={s.id} className="border-t border-slate-100 hover:bg-slate-50/50">
+                    <td className="px-4 py-2 text-xs text-slate-500 whitespace-nowrap">
+                      <div>{new Date(s.createdAt).toLocaleDateString("th-TH")}</div>
+                      <div className="text-[10px] text-slate-400">
+                        {new Date(s.createdAt).toLocaleTimeString("th-TH", { hour: "2-digit", minute: "2-digit" })}
+                      </div>
+                    </td>
+                    <td className="px-4 py-2 font-mono text-xs">{s.id}</td>
+                    <td className="px-4 py-2 text-right font-semibold">{s.lines.length}</td>
+                    <td className="px-4 py-2 text-right font-semibold">{total}</td>
+                    <td className="px-4 py-2 text-center">
+                      {s.closed ? (
+                        <span className="inline-flex items-center gap-1 px-2 py-0.5 bg-slate-700 text-white text-[10px] font-semibold rounded-full">
+                          <LockIcon className="w-3 h-3" /> ปิดแล้ว
+                        </span>
+                      ) : (
+                        <span className="inline-flex items-center gap-1 px-2 py-0.5 bg-amber-100 text-amber-700 text-[10px] font-semibold rounded-full">
+                          กำลังนับ
+                        </span>
+                      )}
+                    </td>
+                    <td className="px-4 py-2">
+                      <div className="flex gap-1 justify-end">
+                        <button
+                          onClick={() => setPrinting(s)}
+                          title="พิมพ์ใบปะหน้า"
+                          className="p-1.5 rounded-md text-emerald-600 hover:bg-emerald-50"
+                        >
+                          <PrintIcon />
+                        </button>
+                        <button
+                          onClick={() => removeSession(s)}
+                          title="ลบ"
+                          className="p-1.5 rounded-md text-rose-500 hover:bg-rose-50"
+                        >
+                          <TrashIcon />
+                        </button>
+                      </div>
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {cameraOpen && (
+        <CameraScanner onResult={onCameraResult} onClose={() => setCameraOpen(false)} />
+      )}
+      {printing && (
+        <PreCountPrintModal
+          t={printing}
+          isMobile={isMobile}
+          onClose={() => setPrinting(null)}
+        />
+      )}
+
+      {/* Toasts */}
+      <div className="fixed bottom-4 right-4 space-y-2 z-50">
+        {toasts.map((t) => (
+          <div
+            key={t.id}
+            className={`animate-fadeUp flex items-center gap-2 px-4 py-2.5 rounded-lg shadow-lg text-sm font-medium ${
+              t.kind === "ok"
+                ? "bg-emerald-600 text-white"
+                : t.kind === "warn"
+                ? "bg-amber-500 text-white"
+                : "bg-rose-600 text-white"
+            }`}
+          >
+            {t.kind === "ok" && <CheckIcon className="w-4 h-4" />}
+            {t.text}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function CategoryBadge({
+  category,
+  unitPrice,
+}: {
+  category: PreCountCategory;
+  unitPrice?: number;
+}) {
+  const meta = CATEGORY_META[category];
+  const tones = {
+    indigo: "bg-indigo-600 text-white",
+    rose: "bg-rose-500 text-white",
+    amber: "bg-amber-500 text-white",
+    slate: "bg-slate-300 text-slate-700",
+  };
+  return (
+    <div className="text-right shrink-0">
+      <span
+        className={`inline-block px-2 py-0.5 text-[10px] font-bold rounded uppercase tracking-widest ${tones[meta.tone]}`}
+      >
+        {meta.short}
+      </span>
+      <div className="text-[10px] text-slate-500 mt-0.5">{meta.label}</div>
+      {category === "gift-paid" && unitPrice ? (
+        <div className="text-[10px] text-amber-700 font-semibold mt-0.5">
+          ราคา {unitPrice.toLocaleString()}฿
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function SessionLineRow({
+  line,
+  onChangeQty,
+  onRemove,
+}: {
+  line: TransferLine;
+  onChangeQty: (q: number) => void;
+  onRemove: () => void;
+}) {
+  const cat = (line.precountCategory ?? "normal") as PreCountCategory;
+  const meta = CATEGORY_META[cat];
+  const tones = {
+    indigo: "bg-indigo-100 text-indigo-700 border-indigo-200",
+    rose: "bg-rose-100 text-rose-700 border-rose-200",
+    amber: "bg-amber-100 text-amber-700 border-amber-200",
+    slate: "bg-slate-100 text-slate-700 border-slate-200",
+  };
+  return (
+    <div className={`text-sm rounded-lg p-2.5 border ${tones[meta.tone]} bg-opacity-30`}>
+      <div className="flex justify-between gap-2 items-start">
+        <div className="flex-1 min-w-0">
+          <div className="flex items-center gap-1.5 flex-wrap">
+            <span className={`text-[9px] font-bold uppercase tracking-wide px-1.5 py-0.5 rounded ${meta.tone === "indigo" ? "bg-indigo-600 text-white" : meta.tone === "rose" ? "bg-rose-500 text-white" : meta.tone === "amber" ? "bg-amber-500 text-white" : "bg-slate-400 text-white"}`}>
+              {meta.short}
+            </span>
+            <span className="font-mono text-xs font-semibold text-slate-800">{line.itemNo}</span>
+          </div>
+          <div className="text-[11px] text-slate-700 truncate mt-0.5">{line.description}</div>
+          {line.unitPrice ? (
+            <div className="text-[10px] text-slate-500">
+              ราคา {Number(line.unitPrice).toLocaleString()}฿
+            </div>
+          ) : null}
+        </div>
+        <div className="flex flex-col items-end gap-1">
+          <input
+            type="number"
+            min={0}
+            value={line.quantity}
+            onChange={(e) => onChangeQty(parseInt(e.target.value || "0", 10))}
+            className="w-16 text-right border border-slate-300 rounded-md px-1.5 py-0.5 text-sm font-semibold bg-white"
+          />
+          <button
+            onClick={onRemove}
+            className="flex items-center gap-0.5 text-[11px] text-rose-500 hover:text-rose-700"
+          >
+            <TrashIcon className="w-3 h-3" /> ลบ
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function StatCard({
+  label,
+  value,
+  tone,
+}: {
+  label: string;
+  value: number;
+  tone: "slate" | "amber" | "emerald" | "indigo" | "rose";
+}) {
+  const tones = {
+    slate: "from-slate-50 to-white border-slate-200 text-slate-700",
+    amber: "from-amber-50 to-white border-amber-200 text-amber-700",
+    emerald: "from-emerald-50 to-white border-emerald-200 text-emerald-700",
+    indigo: "from-indigo-50 to-white border-indigo-200 text-indigo-700",
+    rose: "from-rose-50 to-white border-rose-200 text-rose-700",
+  };
+  return (
+    <div
+      className={`bg-gradient-to-br ${tones[tone]} border rounded-2xl p-4 shadow-[0_1px_2px_rgba(15,23,42,0.04)]`}
+    >
+      <div className="text-[11px] uppercase tracking-wide font-semibold opacity-70">
+        {label}
+      </div>
+      <div className="text-2xl font-extrabold mt-0.5">{value}</div>
+    </div>
+  );
+}
+
+function Stat({
+  label,
+  value,
+  tone,
+}: {
+  label: string;
+  value: number;
+  tone: "indigo" | "rose" | "amber";
+}) {
+  const tones = {
+    indigo: "bg-indigo-50 text-indigo-700 border-indigo-100",
+    rose: "bg-rose-50 text-rose-700 border-rose-100",
+    amber: "bg-amber-50 text-amber-700 border-amber-100",
+  };
+  return (
+    <div className={`rounded-xl border px-2.5 py-1.5 ${tones[tone]}`}>
+      <div className="text-[9px] uppercase tracking-wide font-semibold opacity-70">{label}</div>
+      <div className="text-lg font-extrabold leading-tight">{value}</div>
+    </div>
+  );
+}
+
+function PreCountPrintModal({
+  t,
+  isMobile,
+  onClose,
+}: {
+  t: Transfer;
+  isMobile: boolean;
+  onClose: () => void;
+}) {
+  const ui = useUI();
+  const [busy, setBusy] = useState<"print" | "share" | null>(null);
+  const [canShare, setCanShare] = useState(false);
+  const coverRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    setCanShare(typeof (navigator as any).share === "function");
+  }, []);
+
+  function doPrint() {
+    setBusy("print");
+    const after = () => {
+      setBusy(null);
+      window.removeEventListener("afterprint", after);
+    };
+    window.addEventListener("afterprint", after);
+    setTimeout(() => window.print(), 60);
+  }
+
+  async function doShare() {
+    if (!coverRef.current) return;
+    setBusy("share");
+    try {
+      const blob = await elementToPdfBlob(coverRef.current);
+      const filename = `PreCount-${t.id}.pdf`;
+      const { shared, cancelled } = await shareOrDownloadBlob(blob, filename, `Pre-count ${t.id}`);
+      if (!shared && !cancelled) {
+        ui.ok("ดาวน์โหลด PDF แล้ว", "เปิดไฟล์เพื่อแชร์ต่อใน Line / อื่นๆ");
+      }
+    } catch (e: any) {
+      ui.err("แชร์ไม่สำเร็จ", e?.message ?? String(e));
+    }
+    setBusy(null);
+  }
+
+  return (
+    <>
+      <div className="fixed inset-0 z-[160] flex items-center justify-center bg-black/45 backdrop-blur-sm p-4 animate-backdrop-in no-print">
+        <div className="bg-white rounded-2xl shadow-2xl max-w-sm w-full overflow-hidden animate-modal-in">
+          <div className="bg-gradient-to-br from-indigo-500 via-indigo-600 to-violet-700 text-white px-5 py-5 text-center relative overflow-hidden">
+            <div className="absolute -right-6 -top-6 w-28 h-28 rounded-full bg-white/15 blur-2xl" />
+            <div className="relative">
+              <div className="w-14 h-14 mx-auto rounded-full bg-white/20 grid place-items-center mb-2">
+                <GiftIcon className="w-7 h-7" />
+              </div>
+              <h2 className="font-extrabold text-xl">บันทึก Session แล้ว</h2>
+              <p className="text-xs opacity-90 mt-0.5">ใบปะหน้า Pre-count Demo / Gift</p>
+            </div>
+          </div>
+
+          <div className="p-5 space-y-3">
+            <div className="text-center">
+              <div className="text-[10px] uppercase tracking-widest text-slate-500 font-semibold">
+                Session ID
+              </div>
+              <div className="font-mono font-extrabold text-lg text-slate-900 mt-1 select-all">
+                {t.id}
+              </div>
+            </div>
+
+            <div className="space-y-2 pt-1">
+              <button
+                onClick={doPrint}
+                disabled={busy !== null}
+                className="w-full flex items-center justify-center gap-2 px-4 py-3 bg-gradient-to-br from-slate-800 to-slate-900 text-white text-sm font-semibold rounded-xl active:scale-95 shadow-md transition disabled:opacity-50"
+              >
+                <PrintIcon className="w-4 h-4" />
+                {busy === "print" ? "กำลังพิมพ์..." : "พิมพ์ใบปะหน้า"}
+              </button>
+              {isMobile && canShare && (
+                <button
+                  onClick={doShare}
+                  disabled={busy !== null}
+                  className="w-full flex items-center justify-center gap-2 px-4 py-3 bg-gradient-to-br from-[#06c755] to-[#048a3c] text-white text-sm font-semibold rounded-xl active:scale-95 shadow-md transition disabled:opacity-50"
+                >
+                  <ShareIcon className="w-4 h-4" />
+                  {busy === "share" ? "กำลังสร้าง PDF..." : "ส่งต่อ Line / อื่นๆ (PDF)"}
+                </button>
+              )}
+              <button
+                onClick={onClose}
+                disabled={busy !== null}
+                className="w-full text-xs text-slate-500 hover:text-slate-700 py-1.5"
+              >
+                ปิดหน้าต่างนี้
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div
+        ref={coverRef}
+        id="print-area"
+        className="fixed left-[-10000px] top-0 bg-white"
+        style={{ width: "210mm" }}
+        aria-hidden="true"
+      >
+        <PreCountCoverSheet t={t} />
+      </div>
+    </>
+  );
+}

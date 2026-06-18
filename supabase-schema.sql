@@ -12,6 +12,9 @@ create table if not exists items (
   "baseUom"      text,
   stock          numeric
 );
+alter table items add column if not exists "unitPrice"        numeric;
+alter table items add column if not exists "itemCategoryDes"  text;
+alter table items add column if not exists "productGroupDes"  text;
 create index if not exists items_barcode_idx on items(barcode);
 
 create table if not exists ledger (
@@ -49,8 +52,10 @@ create table if not exists transfers (
   note            text,
   lines           jsonb default '[]'
 );
+alter table transfers add column if not exists "type" text default 'to';
 create index if not exists transfers_createdAt_idx     on transfers("createdAt" desc);
 create index if not exists transfers_externalDocNo_idx on transfers("externalDocNo");
+create index if not exists transfers_type_idx          on transfers("type");
 
 create table if not exists journal (
   id                    text primary key,

@@ -201,12 +201,30 @@ export async function saveTransfer(t: Transfer) {
 }
 
 export async function listTransfers(): Promise<Transfer[]> {
+  // Excludes precount sessions — those live in their own tab.
   const { data, error } = await sb()
     .from(T_TRANSFERS)
     .select("*")
+    .or("type.is.null,type.eq.to")
     .order("createdAt", { ascending: false });
   if (error) throw error;
   return (data ?? []) as Transfer[];
+}
+
+export async function listPreCountSessions(): Promise<Transfer[]> {
+  const { data, error } = await sb()
+    .from(T_TRANSFERS)
+    .select("*")
+    .eq("type", "precount")
+    .order("createdAt", { ascending: false });
+  if (error) throw error;
+  return (data ?? []) as Transfer[];
+}
+
+export async function deleteTransferRaw(id: string) {
+  // For precount sessions — no journal cascade, no reservation revert
+  const { error } = await sb().from(T_TRANSFERS).delete().eq("id", id);
+  if (error) throw error;
 }
 
 export async function getTransfer(id: string): Promise<Transfer | undefined> {

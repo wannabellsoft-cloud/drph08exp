@@ -108,6 +108,9 @@ export function parseItemMaster(rows: Record<string, unknown>[]): Item[] {
         barcode,
         baseUom: toStr(r["Base Unit of Measure"]),
         stock: toNum(r["Stock"]),
+        unitPrice: toNum(r["Unit Price Including VAT"] ?? r["Unit Price"]),
+        itemCategoryDes: toStr(r["Item Category Des"]),
+        productGroupDes: toStr(r["Product Group Des"]),
       } as Item;
     })
     .filter((x): x is Item => !!x);

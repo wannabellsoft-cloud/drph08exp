@@ -5,7 +5,14 @@ export type Item = {
   barcode: string;
   baseUom?: string;
   stock?: number;
+  // Extra columns from Item Master needed to classify Demo / Premium Gift
+  // items in the Pre-count flow.
+  unitPrice?: number;
+  itemCategoryDes?: string;
+  productGroupDes?: string;
 };
+
+export type PreCountCategory = "demo" | "gift" | "gift-paid" | "normal";
 
 export type LedgerEntry = {
   entryNo: number;
@@ -38,6 +45,10 @@ export type TransferLine = {
   journalEntryId?: string;
   newLotNo?: string;
   newExpirationDate?: string;
+  // Pre-count specific — these lines belong to a precount Transfer and
+  // are never exported to BC TO Excel or Item Journal.
+  precountCategory?: PreCountCategory;
+  unitPrice?: number;
 };
 
 export type Transfer = {
@@ -58,6 +69,10 @@ export type Transfer = {
   cartonNo?: string;
   note?: string;
   lines: TransferLine[];
+  // "to" (default) is the standard 60008→60008-EXP TO carton.
+  // "precount" is a physical pre-count session for Demo/Gift items that
+  // doesn't generate a TO Excel or an Item Journal.
+  type?: "to" | "precount";
 };
 
 export type ItemJournalEntry = {

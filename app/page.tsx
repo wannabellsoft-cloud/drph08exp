@@ -1,7 +1,7 @@
 "use client";
 import dynamic from "next/dynamic";
 import { useState } from "react";
-import { ScanIcon, BoxIcon, UploadIcon, JournalIcon, PillIcon } from "@/components/Icons";
+import { ScanIcon, BoxIcon, UploadIcon, JournalIcon, GiftIcon, PillIcon } from "@/components/Icons";
 import { SetupBanner } from "@/components/SetupBanner";
 import { PasswordGate } from "@/components/PasswordGate";
 import { UIProvider } from "@/components/UI";
@@ -15,11 +15,15 @@ const Transfers = dynamic(() => import("@/components/Transfers").then((m) => m.T
 const Journal = dynamic(() => import("@/components/Journal").then((m) => m.Journal), {
   ssr: false,
 });
+const PreCount = dynamic(() => import("@/components/PreCount").then((m) => m.PreCount), {
+  ssr: false,
+});
 
 const TABS = [
   { key: "scan", label: "สแกน & สร้างลัง", Icon: ScanIcon },
   { key: "transfers", label: "Transfers", Icon: BoxIcon },
   { key: "journal", label: "Item Journal", Icon: JournalIcon },
+  { key: "precount", label: "Pre-count", Icon: GiftIcon },
   { key: "upload", label: "Upload Data", Icon: UploadIcon },
 ] as const;
 
@@ -77,6 +81,7 @@ export default function Home() {
         {tab === "scan" && <Scan />}
         {tab === "transfers" && <Transfers />}
         {tab === "journal" && <Journal />}
+        {tab === "precount" && <PreCount />}
         {tab === "upload" && (
           <PasswordGate>
             <Upload />
