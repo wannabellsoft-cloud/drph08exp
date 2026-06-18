@@ -107,6 +107,8 @@ function ItemsBrowser({ category }: { category: "demo" | "gift" }) {
   const [onlyInStock, setOnlyInStock] = useState(true);
   const [refreshKey, setRefreshKey] = useState(0);
 
+  const [diag, setDiag] = useState<{ mapSize: number } | null>(null);
+
   useEffect(() => {
     let cancelled = false;
     (async () => {
@@ -117,16 +119,18 @@ function ItemsBrowser({ category }: { category: "demo" | "gift" }) {
           fetchRemainTotals(),
         ]);
         if (cancelled) return;
+        setDiag({ mapSize: remainMap.size });
         const want: PreCountCategory[] =
           category === "demo" ? ["demo"] : ["gift", "gift-paid"];
         const out: BrowseRow[] = [];
         for (const it of items) {
           const cat = classifyItem(it);
           if (!want.includes(cat)) continue;
+          const key = String(it.itemNo).trim();
           out.push({
             item: it,
             category: cat,
-            remain: remainMap.get(it.itemNo) ?? 0,
+            remain: remainMap.get(key) ?? 0,
           });
         }
         // Sort: by Remain desc, then by Item No
@@ -187,6 +191,37 @@ function ItemsBrowser({ category }: { category: "demo" | "gift" }) {
           <StatCard label="ไม่มี Stock" value={stats.total - stats.inStock} tone="slate" />
         )}
       </div>
+
+      {/* Diagnostic when nothing has Remain */}
+      {!loading && rows.length > 0 && stats.totalRemain === 0 && (
+        <div className="bg-amber-50 border border-amber-300 rounded-2xl p-4 text-sm text-amber-900">
+          <div className="font-semibold mb-1">Remain ทุกรายการเป็น 0 — เช็ค 3 อย่างนี้</div>
+          <ol className="list-decimal list-inside text-xs text-amber-800 space-y-0.5">
+            <li>
+              ยอด Ledger ที่ Remain map รวมได้:{" "}
+              <span className="font-mono font-bold">{diag?.mapSize ?? 0}</span> items —
+              ถ้าเป็น 0 แปลว่ายังไม่ได้อัพ Ledger หรือ Ledger ไม่มี Remaining Quantity &gt; 0
+            </li>
+            <li>
+              <b>RPC <code className="bg-amber-100 px-1 rounded">item_remain_total()</code></b>{" "}
+              อาจยังไม่ถูกสร้างใน Supabase — รัน{" "}
+              <a
+                className="underline font-semibold"
+                href="https://github.com/wannabellsoft-cloud/drph08exp/blob/main/supabase-schema.sql"
+                target="_blank"
+                rel="noreferrer"
+              >
+                supabase-schema.sql ทั้งไฟล์
+              </a>{" "}
+              อีกครั้ง (idempotent ปลอดภัย)
+            </li>
+            <li>
+              Item No. ใน Item Master ตรงกับใน Ledger หรือไม่ (case + whitespace) — ระบบ trim ให้แล้ว
+              ปกติไม่ใช่ปัญหา
+            </li>
+          </ol>
+        </div>
+      )}
 
       {/* Toolbar */}
       <div className="flex flex-wrap items-center gap-2">

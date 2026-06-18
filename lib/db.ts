@@ -248,18 +248,33 @@ export async function listItemsByCategoryRough(
   return all;
 }
 
-// Map of itemNo → total Remaining Quantity in Ledger, via RPC. Falls back
-// to a single-table scan when the RPC isn't deployed yet.
+// Map of itemNo → total Remaining Quantity in Ledger.
+// Tries the RPC first (one round-trip), but PostgREST has historically
+// lowercased TABLE-returning column names, so we read several casings
+// before giving up. If the RPC isn't deployed or returns nothing, the
+// fallback paginates the Ledger and sums client-side — with a stable
+// ORDER BY so the page boundaries don't skip rows.
 export async function fetchRemainTotals(): Promise<Map<string, number>> {
   const map = new Map<string, number>();
-  const r = await sb().rpc("item_remain_total");
-  if (!r.error && Array.isArray(r.data)) {
-    for (const row of r.data as Array<{ itemNo: string; total: number }>) {
-      if (row?.itemNo) map.set(row.itemNo, Number(row.total) || 0);
+
+  // 1) RPC
+  try {
+    const r = await sb().rpc("item_remain_total");
+    if (!r.error && Array.isArray(r.data) && r.data.length > 0) {
+      for (const row of r.data as any[]) {
+        const key = String(
+          row?.itemNo ?? row?.item_no ?? row?.itemno ?? "",
+        ).trim();
+        const total = Number(row?.total ?? 0);
+        if (key) map.set(key, total);
+      }
+      if (map.size > 0) return map;
     }
-    return map;
+  } catch {
+    // fall through to paginated query
   }
-  // Fallback — sum client-side. Paginates so we don't get truncated at 1000.
+
+  // 2) Paginated fallback
   const PAGE = 1000;
   let from = 0;
   while (true) {
@@ -267,12 +282,15 @@ export async function fetchRemainTotals(): Promise<Map<string, number>> {
       .from(T_LEDGER)
       .select("itemNo, remainingQuantity")
       .gt("remainingQuantity", 0)
+      .order("entryNo", { ascending: true })
       .range(from, from + PAGE - 1);
     if (error) throw error;
     const chunk = (data ?? []) as Array<{ itemNo: string; remainingQuantity: number }>;
     for (const row of chunk) {
-      const cur = map.get(row.itemNo) ?? 0;
-      map.set(row.itemNo, cur + (Number(row.remainingQuantity) || 0));
+      if (!row.itemNo) continue;
+      const key = String(row.itemNo).trim();
+      const cur = map.get(key) ?? 0;
+      map.set(key, cur + (Number(row.remainingQuantity) || 0));
     }
     if (chunk.length < PAGE) break;
     from += PAGE;
