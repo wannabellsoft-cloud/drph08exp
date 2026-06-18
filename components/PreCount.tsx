@@ -7,8 +7,9 @@ import {
   getTransfer,
   listPreCountSessions,
   deleteTransferRaw,
+  stockForItem,
 } from "@/lib/db";
-import type { Item, Transfer, TransferLine, PreCountCategory } from "@/lib/types";
+import type { Item, Transfer, TransferLine, PreCountCategory, StockSummary } from "@/lib/types";
 import { classifyItem, CATEGORY_META } from "@/lib/itemClassify";
 import { useUI } from "./UI";
 import { PreCountCoverSheet } from "./PreCountCoverSheet";
@@ -37,7 +38,12 @@ function uid(prefix = "PC") {
 }
 
 type Toast = { id: number; kind: "ok" | "warn" | "err"; text: string };
-type ScannedItem = { item: Item; category: PreCountCategory };
+type ScannedItem = {
+  item: Item;
+  category: PreCountCategory;
+  remaining: number; // sum of Remaining Quantity across all lots/locations in Ledger
+  lots: StockSummary["lots"];
+};
 
 export function PreCount() {
   const inputRef = useRef<HTMLInputElement>(null);
@@ -119,9 +125,25 @@ export function PreCount() {
       return;
     }
     const category = classifyItem(item);
-    setScanned({ item, category });
-    setQty(1);
+    const stock = await stockForItem(item.itemNo);
+    const remaining = stock.lots.reduce((a, l) => a + (l.remaining ?? 0), 0);
+    setScanned({ item, category, remaining, lots: stock.lots });
+    // Default qty: 1 if remain allows, else 0
+    setQty(remaining > 0 ? 1 : 0);
   }
+
+  // How many of this item are already in the current session — we subtract
+  // this from the Ledger remain to clamp the user's qty input.
+  function inSessionFor(itemNo: string): number {
+    if (!session) return 0;
+    return session.lines
+      .filter((l) => l.itemNo === itemNo)
+      .reduce((a, l) => a + (l.quantity ?? 0), 0);
+  }
+
+  const maxCanAdd = scanned
+    ? Math.max(0, scanned.remaining - inSessionFor(scanned.item.itemNo))
+    : 0;
 
   function onKey(e: React.KeyboardEvent<HTMLInputElement>) {
     if (e.key === "Enter") {
@@ -140,6 +162,10 @@ export function PreCount() {
     if (!scanned) return;
     if (qty <= 0) {
       pushToast("err", "จำนวนต้องมากกว่า 0");
+      return;
+    }
+    if (qty > maxCanAdd) {
+      pushToast("err", `เกิน Remain ใน Ledger — เพิ่มได้ไม่เกิน ${maxCanAdd}`);
       return;
     }
     const s = await ensureSession();
@@ -179,8 +205,22 @@ export function PreCount() {
 
   async function updateLineQty(idx: number, q: number) {
     if (!session || session.closed) return;
+    const target = session.lines[idx];
+    if (!target) return;
+    // Cap edits to total Remain across the whole session for this item.
+    const stock = await stockForItem(target.itemNo);
+    const remaining = stock.lots.reduce((a, l) => a + (l.remaining ?? 0), 0);
+    const inSessionExcludingThis = session.lines
+      .filter((_, i) => i !== idx)
+      .filter((l) => l.itemNo === target.itemNo)
+      .reduce((a, l) => a + (l.quantity ?? 0), 0);
+    const maxForThis = Math.max(0, remaining - inSessionExcludingThis);
+    const clamped = Math.max(0, Math.min(q, maxForThis));
+    if (q > maxForThis) {
+      pushToast("warn", `เกิน Remain — สูงสุดที่แก้ได้คือ ${maxForThis}`);
+    }
     const lines = session.lines.map((l, i) =>
-      i === idx ? { ...l, quantity: Math.max(0, q) } : l,
+      i === idx ? { ...l, quantity: clamped } : l,
     );
     const next = { ...session, lines };
     await saveTransfer(next);
@@ -365,6 +405,48 @@ export function PreCount() {
                 <CategoryBadge category={scanned.category} unitPrice={scanned.item.unitPrice} />
               </div>
 
+              {/* Ledger Remain panel */}
+              <div className="grid grid-cols-3 gap-2 mb-3">
+                <div className="rounded-lg border border-slate-200 bg-slate-50 px-2 py-1.5">
+                  <div className="text-[9px] uppercase tracking-wide font-semibold text-slate-500">
+                    Remain (Ledger)
+                  </div>
+                  <div className="text-lg font-extrabold text-slate-900 leading-tight">
+                    {scanned.remaining}
+                  </div>
+                </div>
+                <div className="rounded-lg border border-amber-200 bg-amber-50 px-2 py-1.5">
+                  <div className="text-[9px] uppercase tracking-wide font-semibold text-amber-700">
+                    ใน Session
+                  </div>
+                  <div className="text-lg font-extrabold text-amber-900 leading-tight">
+                    {inSessionFor(scanned.item.itemNo)}
+                  </div>
+                </div>
+                <div
+                  className={`rounded-lg border px-2 py-1.5 ${
+                    maxCanAdd <= 0
+                      ? "border-rose-200 bg-rose-50"
+                      : "border-emerald-200 bg-emerald-50"
+                  }`}
+                >
+                  <div
+                    className={`text-[9px] uppercase tracking-wide font-semibold ${
+                      maxCanAdd <= 0 ? "text-rose-700" : "text-emerald-700"
+                    }`}
+                  >
+                    เพิ่มได้อีก
+                  </div>
+                  <div
+                    className={`text-lg font-extrabold leading-tight ${
+                      maxCanAdd <= 0 ? "text-rose-900" : "text-emerald-900"
+                    }`}
+                  >
+                    {maxCanAdd}
+                  </div>
+                </div>
+              </div>
+
               {scanned.category === "normal" && (
                 <div className="mb-3 text-[11px] text-amber-800 bg-amber-50 border border-amber-200 rounded-lg p-2">
                   ⚠ สินค้านี้ไม่ใช่ Demo หรือ Premium Gift —
@@ -372,38 +454,74 @@ export function PreCount() {
                 </div>
               )}
 
+              {scanned.remaining === 0 && (
+                <div className="mb-3 text-[11px] text-rose-800 bg-rose-50 border border-rose-200 rounded-lg p-2">
+                  สินค้านี้ไม่มี Remain ใน Ledger — เพิ่มไม่ได้
+                </div>
+              )}
+
+              {maxCanAdd === 0 && scanned.remaining > 0 && (
+                <div className="mb-3 text-[11px] text-amber-800 bg-amber-50 border border-amber-200 rounded-lg p-2">
+                  เพิ่มครบ Remain แล้ว — แก้จำนวนใน Session ถ้าต้องการลด
+                </div>
+              )}
+
               <div className="flex items-end gap-3">
                 <div>
-                  <div className="text-[10px] uppercase tracking-wide font-semibold text-slate-500 mb-1">
-                    จำนวน
+                  <div className="flex items-baseline justify-between mb-1">
+                    <span className="text-[10px] uppercase tracking-wide font-semibold text-slate-500">
+                      จำนวน
+                    </span>
+                    <span className="text-[10px] text-slate-400 ml-2">
+                      max <span className="font-bold text-slate-600">{maxCanAdd}</span>
+                    </span>
                   </div>
                   <div className="flex items-center gap-2">
                     <button
                       type="button"
                       onClick={() => setQty(Math.max(1, qty - 1))}
-                      className="w-9 h-9 rounded-full bg-slate-100 hover:bg-slate-200 active:scale-95 text-lg font-bold text-slate-700"
+                      disabled={qty <= 1}
+                      className="w-9 h-9 rounded-full bg-slate-100 hover:bg-slate-200 active:scale-95 text-lg font-bold text-slate-700 disabled:opacity-30 disabled:cursor-not-allowed"
                     >
                       −
                     </button>
                     <input
                       type="number"
                       min={1}
+                      max={maxCanAdd}
                       value={qty}
-                      onChange={(e) => setQty(Math.max(1, parseInt(e.target.value || "1", 10)))}
-                      className="w-20 text-center text-2xl font-extrabold border-2 border-slate-200 rounded-xl py-1.5 focus:outline-none focus:border-indigo-400 focus:ring-2 focus:ring-indigo-100"
+                      onChange={(e) => {
+                        const v = parseInt(e.target.value || "0", 10);
+                        if (Number.isNaN(v)) return;
+                        setQty(Math.max(0, Math.min(v, maxCanAdd)));
+                      }}
+                      disabled={maxCanAdd <= 0}
+                      className="w-20 text-center text-2xl font-extrabold border-2 border-slate-200 rounded-xl py-1.5 focus:outline-none focus:border-indigo-400 focus:ring-2 focus:ring-indigo-100 disabled:bg-slate-100 disabled:text-slate-400"
                     />
                     <button
                       type="button"
-                      onClick={() => setQty(qty + 1)}
-                      className="w-9 h-9 rounded-full bg-slate-100 hover:bg-slate-200 active:scale-95 text-lg font-bold text-slate-700"
+                      onClick={() => setQty(Math.min(maxCanAdd, qty + 1))}
+                      disabled={qty >= maxCanAdd}
+                      className="w-9 h-9 rounded-full bg-slate-100 hover:bg-slate-200 active:scale-95 text-lg font-bold text-slate-700 disabled:opacity-30 disabled:cursor-not-allowed"
                     >
                       +
+                    </button>
+                  </div>
+                  <div className="flex gap-1 mt-1">
+                    <button
+                      type="button"
+                      onClick={() => setQty(maxCanAdd)}
+                      disabled={maxCanAdd <= 0}
+                      className="px-1.5 py-0.5 text-[10px] font-semibold bg-white border border-indigo-200 text-indigo-700 rounded hover:bg-indigo-50 disabled:opacity-30"
+                    >
+                      max ({maxCanAdd})
                     </button>
                   </div>
                 </div>
                 <button
                   onClick={addToSession}
-                  className="flex-1 flex items-center justify-center gap-2 px-4 py-3 bg-gradient-to-br from-indigo-500 to-indigo-700 text-white text-sm font-semibold rounded-xl active:scale-95 shadow-md transition"
+                  disabled={maxCanAdd <= 0 || qty <= 0}
+                  className="flex-1 flex items-center justify-center gap-2 px-4 py-3 bg-gradient-to-br from-indigo-500 to-indigo-700 text-white text-sm font-semibold rounded-xl active:scale-95 shadow-md transition disabled:opacity-40 disabled:cursor-not-allowed disabled:from-slate-400 disabled:to-slate-500"
                 >
                   <PlusIcon /> ลงในลัง
                 </button>
