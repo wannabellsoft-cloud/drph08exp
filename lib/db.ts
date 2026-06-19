@@ -248,6 +248,20 @@ export async function listItemsByCategoryRough(
   return all;
 }
 
+// Item Master "Stock" column for one item — the canonical BC-reported
+// on-hand quantity. Pre-count uses this directly so the screen matches
+// what the user sees in BC, rather than re-deriving from Ledger sums
+// (which can be 0 for Demo/Gift items that never moved).
+export async function getItemMasterStock(itemNo: string): Promise<number> {
+  const { data, error } = await sb()
+    .from(T_ITEMS)
+    .select("stock")
+    .eq("itemNo", itemNo)
+    .maybeSingle();
+  if (error) return 0;
+  return Number((data as any)?.stock ?? 0);
+}
+
 // Map of itemNo → total Remaining Quantity in Ledger.
 // Tries the RPC first (one round-trip), but PostgREST has historically
 // lowercased TABLE-returning column names, so we read several casings
