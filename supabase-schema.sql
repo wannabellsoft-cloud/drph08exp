@@ -79,6 +79,14 @@ create table if not exists journal (
   "appliedAt"           timestamptz,
   note                  text
 );
+-- "CF" (confirmed-present-in-store) flags used by the Pre-count Demo/Gift
+-- browse tabs. Store staff walks the shelf and toggles each item; one
+-- row per item, presence == confirmed.
+create table if not exists precount_confirmations (
+  "itemNo"      text primary key,
+  "confirmedAt" timestamptz default now()
+);
+
 alter table journal add column if not exists "cartonId" text;
 create index if not exists journal_createdAt_idx  on journal("createdAt" desc);
 create index if not exists journal_documentNo_idx on journal("documentNo");
@@ -130,17 +138,20 @@ create or replace function truncate_journal()   returns void language sql as $$ 
 -- For production, protect the deployed URL itself (e.g., Vercel Password
 -- Protection, Cloudflare Access) or replace these policies with auth-based
 -- ones.
-alter table items     enable row level security;
-alter table ledger    enable row level security;
-alter table transfers enable row level security;
-alter table journal   enable row level security;
+alter table items                  enable row level security;
+alter table ledger                 enable row level security;
+alter table transfers              enable row level security;
+alter table journal                enable row level security;
+alter table precount_confirmations enable row level security;
 
-drop policy if exists "anon all items"     on items;
-drop policy if exists "anon all ledger"    on ledger;
-drop policy if exists "anon all transfers" on transfers;
-drop policy if exists "anon all journal"   on journal;
+drop policy if exists "anon all items"          on items;
+drop policy if exists "anon all ledger"         on ledger;
+drop policy if exists "anon all transfers"      on transfers;
+drop policy if exists "anon all journal"        on journal;
+drop policy if exists "anon all confirmations"  on precount_confirmations;
 
-create policy "anon all items"     on items     for all to anon using (true) with check (true);
-create policy "anon all ledger"    on ledger    for all to anon using (true) with check (true);
-create policy "anon all transfers" on transfers for all to anon using (true) with check (true);
-create policy "anon all journal"   on journal   for all to anon using (true) with check (true);
+create policy "anon all items"         on items                  for all to anon using (true) with check (true);
+create policy "anon all ledger"        on ledger                 for all to anon using (true) with check (true);
+create policy "anon all transfers"     on transfers              for all to anon using (true) with check (true);
+create policy "anon all journal"       on journal                for all to anon using (true) with check (true);
+create policy "anon all confirmations" on precount_confirmations for all to anon using (true) with check (true);

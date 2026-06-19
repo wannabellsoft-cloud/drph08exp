@@ -13,6 +13,7 @@ const T_ITEMS = "items";
 const T_LEDGER = "ledger";
 const T_TRANSFERS = "transfers";
 const T_JOURNAL = "journal";
+const T_CONFIRMATIONS = "precount_confirmations";
 
 // Wrap a network-bound call with retry + clearer error context.
 // "TypeError: Failed to fetch" usually means: payload too big, network blip,
@@ -246,6 +247,54 @@ export async function listItemsByCategoryRough(
     from += PAGE;
   }
   return all;
+}
+
+// =========================================================
+// Pre-count "CF" (confirmed-present-in-store) toggles
+// =========================================================
+export async function listConfirmations(): Promise<Map<string, string>> {
+  const map = new Map<string, string>();
+  const PAGE = 1000;
+  let from = 0;
+  while (true) {
+    const { data, error } = await sb()
+      .from(T_CONFIRMATIONS)
+      .select("itemNo, confirmedAt")
+      .order("itemNo", { ascending: true })
+      .range(from, from + PAGE - 1);
+    if (error) {
+      // If table doesn't exist yet, treat as empty
+      if (/relation .* does not exist/i.test(error.message)) return map;
+      throw error;
+    }
+    const chunk = (data ?? []) as Array<{ itemNo: string; confirmedAt: string }>;
+    for (const row of chunk) {
+      if (row.itemNo) map.set(String(row.itemNo).trim(), row.confirmedAt);
+    }
+    if (chunk.length < PAGE) break;
+    from += PAGE;
+  }
+  return map;
+}
+
+export async function confirmItemPresent(itemNo: string) {
+  const { error } = await sb()
+    .from(T_CONFIRMATIONS)
+    .upsert({ itemNo, confirmedAt: new Date().toISOString() });
+  if (error) throw error;
+}
+
+export async function unconfirmItemPresent(itemNo: string) {
+  const { error } = await sb().from(T_CONFIRMATIONS).delete().eq("itemNo", itemNo);
+  if (error) throw error;
+}
+
+export async function clearAllConfirmations() {
+  const { error } = await sb()
+    .from(T_CONFIRMATIONS)
+    .delete()
+    .gte("itemNo", "");
+  if (error) throw error;
 }
 
 // Item Master "Stock" column for one item — the canonical BC-reported
