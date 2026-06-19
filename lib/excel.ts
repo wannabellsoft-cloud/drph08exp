@@ -324,6 +324,7 @@ export type PreCountAuditRow = {
   uom?: string;
   unitPrice?: number;
   remain: number;
+  counted?: number; // Gift only — sum of qty across all precount sessions
   status: "found" | "not-found";
   confirmedAt: string;
 };
@@ -333,7 +334,7 @@ export function exportPreCountAudit(
   category: "demo" | "gift",
 ): Blob {
   const statusLabel: Record<string, string> = {
-    found: "พบสินค้า (Confirm)",
+    found: category === "gift" ? "นับแล้ว" : "พบสินค้า (Confirm)",
     "not-found": "ไม่พบสินค้า",
   };
   const sorted = [...rows].sort((a, b) => {
@@ -353,6 +354,18 @@ export function exportPreCountAudit(
       base["Unit Price"] = r.unitPrice ?? 0;
     }
     base["Remain"] = r.remain;
+    if (category === "gift") {
+      const counted = r.counted ?? 0;
+      base["นับแล้ว"] = counted;
+      const diff = counted - r.remain;
+      let cmp = "";
+      if (r.status === "not-found") cmp = "ไม่พบ";
+      else if (counted === 0) cmp = "—";
+      else if (diff === 0) cmp = "ครบ";
+      else if (diff > 0) cmp = `เกิน +${diff}`;
+      else cmp = `ขาด ${diff}`;
+      base["สถานะนับ"] = cmp;
+    }
     base["สถานะ"] = statusLabel[r.status] ?? r.status;
     base["วันที่ตรวจสอบ"] = r.confirmedAt
       ? new Date(r.confirmedAt).toLocaleString("th-TH")
@@ -368,6 +381,7 @@ export function exportPreCountAudit(
     "UoM",
     ...(category === "gift" ? ["Unit Price"] : []),
     "Remain",
+    ...(category === "gift" ? ["นับแล้ว", "สถานะนับ"] : []),
     "สถานะ",
     "วันที่ตรวจสอบ",
   ];

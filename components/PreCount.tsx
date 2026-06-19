@@ -114,6 +114,8 @@ function ItemsBrowser({ category }: { category: "demo" | "gift" }) {
   const [hideDone, setHideDone] = useState(false);
   const [refreshKey, setRefreshKey] = useState(0);
   const [confirmMap, setConfirmMap] = useState<Map<string, ConfirmationEntry>>(new Map());
+  // Gift only: sum of qty counted across all precount sessions per itemNo
+  const [countedMap, setCountedMap] = useState<Map<string, number>>(new Map());
 
   const [diag, setDiag] = useState<{ mapSize: number } | null>(null);
 
@@ -122,14 +124,39 @@ function ItemsBrowser({ category }: { category: "demo" | "gift" }) {
     (async () => {
       setLoading(true);
       try {
-        const [items, remainMap, confirmations] = await Promise.all([
+        const promises: [
+          ReturnType<typeof listItemsByCategoryRough>,
+          ReturnType<typeof fetchRemainTotals>,
+          ReturnType<typeof listConfirmations>,
+          ReturnType<typeof listPreCountSessions> | Promise<null>,
+        ] = [
           listItemsByCategoryRough(category),
           fetchRemainTotals(),
           listConfirmations(),
-        ]);
+          category === "gift" ? listPreCountSessions() : Promise.resolve(null),
+        ];
+        const [items, remainMap, confirmations, sessions] = await Promise.all(promises);
         if (cancelled) return;
         setDiag({ mapSize: remainMap.size });
         setConfirmMap(confirmations);
+        // Build counted map for Gift category from precount session lines
+        if (category === "gift" && sessions) {
+          const counted = new Map<string, number>();
+          for (const s of sessions) {
+            for (const l of s.lines ?? []) {
+              if (
+                l.precountCategory === "gift" ||
+                l.precountCategory === "gift-paid"
+              ) {
+                const key = String(l.itemNo).trim();
+                counted.set(key, (counted.get(key) ?? 0) + (l.quantity ?? 0));
+              }
+            }
+          }
+          setCountedMap(counted);
+        } else {
+          setCountedMap(new Map());
+        }
         const want: PreCountCategory[] =
           category === "demo" ? ["demo"] : ["gift", "gift-paid"];
         const out: BrowseRow[] = [];
@@ -184,19 +211,29 @@ function ItemsBrowser({ category }: { category: "demo" | "gift" }) {
   }
 
   function exportAudited() {
-    const checked = rows.filter((r) =>
-      confirmMap.has(String(r.item.itemNo).trim()),
-    );
+    const checked = rows.filter((r) => isDone(r.item.itemNo));
     if (checked.length === 0) {
       ui.warn(
         "ยังไม่มีรายการที่ตรวจสอบ",
-        'กดปุ่ม "Confirm" หรือ "ไม่พบ" ก่อนสักรายการแล้วลองใหม่',
+        category === "gift"
+          ? 'นับสินค้าในแท็บ "นับ Stock" หรือกด "ไม่พบ" ก่อน'
+          : 'กดปุ่ม "Confirm" หรือ "ไม่พบ" ก่อนสักรายการแล้วลองใหม่',
       );
       return;
     }
     const auditRows = checked.map((r) => {
       const key = String(r.item.itemNo).trim();
-      const conf = confirmMap.get(key)!;
+      const conf = confirmMap.get(key);
+      const counted = countedMap.get(key) ?? 0;
+      // Gift: status priority — counted > 0 → "found" (via session)
+      let status: "found" | "not-found";
+      let confirmedAt = conf?.confirmedAt ?? new Date().toISOString();
+      if (category === "gift") {
+        if (counted > 0) status = "found";
+        else status = "not-found";
+      } else {
+        status = conf?.status ?? "found";
+      }
       return {
         itemNo: r.item.itemNo,
         description: r.item.description,
@@ -205,22 +242,30 @@ function ItemsBrowser({ category }: { category: "demo" | "gift" }) {
         uom: r.item.baseUom,
         unitPrice: r.item.unitPrice,
         remain: r.remain,
-        status: conf.status,
-        confirmedAt: conf.confirmedAt,
+        counted: category === "gift" ? counted : undefined,
+        status,
+        confirmedAt,
       };
     });
     const blob = exportPreCountAudit(auditRows, category);
     const today = new Date().toISOString().slice(0, 10);
     const prefix = category === "demo" ? "Demo-Audit" : "Gift-Audit";
     downloadBlob(blob, `${prefix}-${today}.xlsx`);
-    const found = checked.filter(
-      (r) => confirmMap.get(String(r.item.itemNo).trim())?.status === "found",
-    ).length;
-    const notFound = checked.length - found;
-    ui.ok(
-      "Export สำเร็จ",
-      `${checked.length} รายการ (Confirm ${found} · ไม่พบ ${notFound})`,
-    );
+    if (category === "gift") {
+      ui.ok(
+        "Export สำเร็จ",
+        `${checked.length} รายการ (นับแล้ว ${stats.counted} · ไม่พบ ${stats.notFound})`,
+      );
+    } else {
+      const found = checked.filter(
+        (r) => confirmMap.get(String(r.item.itemNo).trim())?.status === "found",
+      ).length;
+      const notFound = checked.length - found;
+      ui.ok(
+        "Export สำเร็จ",
+        `${checked.length} รายการ (Confirm ${found} · ไม่พบ ${notFound})`,
+      );
+    }
   }
 
   async function clearAllCF() {
@@ -240,11 +285,22 @@ function ItemsBrowser({ category }: { category: "demo" | "gift" }) {
     }
   }
 
+  // "done" means: for Demo — manually toggled (Confirm or ไม่พบ);
+  // for Gift — counted via the Count Stock session OR marked "ไม่พบ".
+  function isDone(itemNo: string): boolean {
+    const key = String(itemNo).trim();
+    const conf = confirmMap.get(key);
+    if (category === "demo") return !!conf;
+    // gift
+    const counted = countedMap.get(key) ?? 0;
+    if (counted > 0) return true;
+    return conf?.status === "not-found";
+  }
+
   const filtered = useMemo(() => {
     return rows.filter((r) => {
-      const key = String(r.item.itemNo).trim();
       if (onlyInStock && r.remain <= 0) return false;
-      if (hideDone && confirmMap.has(key)) return false;
+      if (hideDone && isDone(r.item.itemNo)) return false;
       if (q) {
         const s = q.toLowerCase();
         const hay = `${r.item.itemNo} ${r.item.barcode ?? ""} ${r.item.description ?? ""} ${r.item.description2 ?? ""}`.toLowerCase();
@@ -252,7 +308,8 @@ function ItemsBrowser({ category }: { category: "demo" | "gift" }) {
       }
       return true;
     });
-  }, [rows, onlyInStock, hideDone, q, confirmMap]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [rows, onlyInStock, hideDone, q, confirmMap, countedMap, category]);
 
   const stats = useMemo(() => {
     const inStock = rows.filter((r) => r.remain > 0);
@@ -260,10 +317,37 @@ function ItemsBrowser({ category }: { category: "demo" | "gift" }) {
     const giftPaid = rows.filter((r) => r.category === "gift-paid").length;
     let confirmed = 0;
     let notFound = 0;
+    let counted = 0;
+    let totalCounted = 0;
+    let ok = 0;
+    let over = 0;
+    let short = 0;
     for (const r of rows) {
-      const e = confirmMap.get(String(r.item.itemNo).trim());
+      const key = String(r.item.itemNo).trim();
+      const e = confirmMap.get(key);
       if (e?.status === "found") confirmed++;
       else if (e?.status === "not-found") notFound++;
+      if (category === "gift") {
+        const c = countedMap.get(key) ?? 0;
+        if (c > 0) {
+          counted++;
+          totalCounted += c;
+          const diff = c - r.remain;
+          if (diff === 0) ok++;
+          else if (diff > 0) over++;
+          else short++;
+        }
+      }
+    }
+    let done = confirmed + notFound;
+    if (category === "gift") {
+      // For Gift: "done" = counted (>0) OR marked not-found.
+      // Counts can overlap with notFound only theoretically, but stay safe:
+      let g = 0;
+      for (const r of rows) {
+        if (isDone(r.item.itemNo)) g++;
+      }
+      done = g;
     }
     return {
       total: rows.length,
@@ -272,9 +356,15 @@ function ItemsBrowser({ category }: { category: "demo" | "gift" }) {
       giftPaid,
       confirmed,
       notFound,
-      done: confirmed + notFound,
+      counted,
+      totalCounted,
+      ok,
+      over,
+      short,
+      done,
     };
-  }, [rows, confirmMap]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [rows, confirmMap, countedMap, category]);
 
   const titleMeta =
     category === "demo"
@@ -289,13 +379,43 @@ function ItemsBrowser({ category }: { category: "demo" | "gift" }) {
         <StatCard label="มี Stock" value={stats.inStock} tone="emerald" />
         <StatCard label="Remain รวม" value={stats.totalRemain} tone={titleMeta.tone} />
         {category === "gift" ? (
-          <StatCard label="ของแถมมีมูลค่า" value={stats.giftPaid} tone="amber" />
+          <>
+            <StatCard label="ของแถมมีมูลค่า" value={stats.giftPaid} tone="amber" />
+            <StatCard label="นับแล้ว" value={stats.counted} tone="emerald" />
+            <StatCard label="ไม่พบ" value={stats.notFound} tone="rose" />
+          </>
         ) : (
-          <StatCard label="ไม่มี Stock" value={stats.total - stats.inStock} tone="slate" />
+          <>
+            <StatCard label="ไม่มี Stock" value={stats.total - stats.inStock} tone="slate" />
+            <StatCard label="Confirm" value={stats.confirmed} tone="emerald" />
+            <StatCard label="ไม่พบ" value={stats.notFound} tone="rose" />
+          </>
         )}
-        <StatCard label="Confirm" value={stats.confirmed} tone="emerald" />
-        <StatCard label="ไม่พบ" value={stats.notFound} tone="rose" />
       </div>
+
+      {/* Gift-only sub-stats: ครบ / ขาด / เกิน */}
+      {category === "gift" && stats.counted > 0 && (
+        <div className="grid grid-cols-3 gap-2 text-center text-xs">
+          <div className="bg-emerald-50 border border-emerald-200 rounded-lg px-3 py-2">
+            <div className="text-[10px] uppercase tracking-wide font-semibold text-emerald-700">
+              ครบ / ตรง
+            </div>
+            <div className="text-lg font-extrabold text-emerald-900">{stats.ok}</div>
+          </div>
+          <div className="bg-rose-50 border border-rose-200 rounded-lg px-3 py-2">
+            <div className="text-[10px] uppercase tracking-wide font-semibold text-rose-700">
+              ขาด
+            </div>
+            <div className="text-lg font-extrabold text-rose-900">{stats.short}</div>
+          </div>
+          <div className="bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
+            <div className="text-[10px] uppercase tracking-wide font-semibold text-amber-700">
+              เกิน
+            </div>
+            <div className="text-lg font-extrabold text-amber-900">{stats.over}</div>
+          </div>
+        </div>
+      )}
 
       {/* Diagnostic when nothing has Remain */}
       {!loading && rows.length > 0 && stats.totalRemain === 0 && (
@@ -410,6 +530,12 @@ function ItemsBrowser({ category }: { category: "demo" | "gift" }) {
                   )}
                   <th className="text-center px-3 py-2.5 font-medium">หมวด</th>
                   <th className="text-right px-3 py-2.5 font-medium">Remain</th>
+                  {category === "gift" && (
+                    <>
+                      <th className="text-right px-3 py-2.5 font-medium">นับแล้ว</th>
+                      <th className="text-center px-3 py-2.5 font-medium">สถานะ</th>
+                    </>
+                  )}
                   <th className="text-center px-3 py-2.5 font-medium">ตรวจสอบ</th>
                 </tr>
               </thead>
@@ -479,12 +605,29 @@ function ItemsBrowser({ category }: { category: "demo" | "gift" }) {
                       >
                         {r.remain}
                       </td>
+                      {category === "gift" && (
+                        <>
+                          <GiftCountedCell counted={countedMap.get(key) ?? 0} />
+                          <GiftStatusCell
+                            counted={countedMap.get(key) ?? 0}
+                            remain={r.remain}
+                            notFound={conf?.status === "not-found"}
+                          />
+                        </>
+                      )}
                       <td className="px-3 py-2 text-center">
-                        <ConfirmButtons
-                          entry={conf}
-                          onConfirm={() => toggleConfirm(r.item.itemNo, "found")}
-                          onNotFound={() => toggleConfirm(r.item.itemNo, "not-found")}
-                        />
+                        {category === "demo" ? (
+                          <ConfirmButtons
+                            entry={conf}
+                            onConfirm={() => toggleConfirm(r.item.itemNo, "found")}
+                            onNotFound={() => toggleConfirm(r.item.itemNo, "not-found")}
+                          />
+                        ) : (
+                          <NotFoundButton
+                            entry={conf}
+                            onClick={() => toggleConfirm(r.item.itemNo, "not-found")}
+                          />
+                        )}
                       </td>
                     </tr>
                   );
@@ -492,16 +635,43 @@ function ItemsBrowser({ category }: { category: "demo" | "gift" }) {
               </tbody>
               <tfoot>
                 <tr className="bg-slate-50 border-t-2 border-slate-200">
-                  <td colSpan={category === "gift" ? 6 : 5} className="px-3 py-2 text-xs text-slate-500">
+                  <td
+                    colSpan={category === "gift" ? 6 : 5}
+                    className="px-3 py-2 text-xs text-slate-500"
+                  >
                     รวม {filtered.length} รายการ
                   </td>
                   <td className="px-3 py-2 text-right font-extrabold text-slate-900">
                     {filtered.reduce((a, r) => a + r.remain, 0)}
                   </td>
+                  {category === "gift" && (
+                    <>
+                      <td className="px-3 py-2 text-right font-extrabold text-emerald-900">
+                        {stats.totalCounted}
+                      </td>
+                      <td className="px-3 py-2 text-center text-[10px]">
+                        <span className="text-emerald-700">{stats.ok}</span>
+                        <span className="text-slate-400 mx-0.5">·</span>
+                        <span className="text-rose-700">{stats.short}</span>
+                        <span className="text-slate-400 mx-0.5">·</span>
+                        <span className="text-amber-700">{stats.over}</span>
+                      </td>
+                    </>
+                  )}
                   <td className="px-3 py-2 text-center text-[10px] text-slate-500">
-                    <span className="text-emerald-700">{stats.confirmed}</span>
-                    <span className="text-slate-400 mx-0.5">·</span>
-                    <span className="text-rose-700">{stats.notFound}</span>
+                    {category === "demo" ? (
+                      <>
+                        <span className="text-emerald-700">{stats.confirmed}</span>
+                        <span className="text-slate-400 mx-0.5">·</span>
+                        <span className="text-rose-700">{stats.notFound}</span>
+                      </>
+                    ) : (
+                      <>
+                        <span className="text-emerald-700">{stats.counted}</span>
+                        <span className="text-slate-400 mx-0.5">·</span>
+                        <span className="text-rose-700">{stats.notFound}</span>
+                      </>
+                    )}
                     <span className="text-slate-400"> / {stats.total}</span>
                   </td>
                 </tr>
@@ -1154,6 +1324,108 @@ function CountSection() {
 // ============================================================
 // Shared small components
 // ============================================================
+
+function GiftCountedCell({ counted }: { counted: number }) {
+  return (
+    <td
+      className={`px-3 py-2 text-right font-extrabold ${
+        counted > 0 ? "text-emerald-900" : "text-slate-400"
+      }`}
+    >
+      {counted || "—"}
+    </td>
+  );
+}
+
+function GiftStatusCell({
+  counted,
+  remain,
+  notFound,
+}: {
+  counted: number;
+  remain: number;
+  notFound: boolean;
+}) {
+  if (counted === 0 && notFound) {
+    return (
+      <td className="px-3 py-2 text-center">
+        <span className="inline-block px-2 py-0.5 bg-rose-600 text-white text-[10px] font-bold rounded">
+          ไม่พบ
+        </span>
+      </td>
+    );
+  }
+  if (counted === 0) {
+    return (
+      <td className="px-3 py-2 text-center text-slate-400 text-[11px]">—</td>
+    );
+  }
+  const diff = counted - remain;
+  if (diff === 0) {
+    return (
+      <td className="px-3 py-2 text-center">
+        <span className="inline-flex items-center gap-1 px-2 py-0.5 bg-emerald-100 text-emerald-800 text-[10px] font-bold rounded border border-emerald-200">
+          ครบ
+        </span>
+      </td>
+    );
+  }
+  if (diff > 0) {
+    return (
+      <td className="px-3 py-2 text-center">
+        <span className="inline-block px-2 py-0.5 bg-amber-100 text-amber-800 text-[10px] font-bold rounded border border-amber-200">
+          เกิน +{diff}
+        </span>
+      </td>
+    );
+  }
+  return (
+    <td className="px-3 py-2 text-center">
+      <span className="inline-block px-2 py-0.5 bg-rose-100 text-rose-800 text-[10px] font-bold rounded border border-rose-200">
+        ขาด {diff}
+      </span>
+    </td>
+  );
+}
+
+function NotFoundButton({
+  entry,
+  onClick,
+}: {
+  entry?: ConfirmationEntry;
+  onClick: () => void;
+}) {
+  const active = entry?.status === "not-found";
+  let stamp = "";
+  if (entry?.confirmedAt) {
+    const t = new Date(entry.confirmedAt);
+    const day = String(t.getDate()).padStart(2, "0");
+    const mon = String(t.getMonth() + 1).padStart(2, "0");
+    const hh = String(t.getHours()).padStart(2, "0");
+    const mm = String(t.getMinutes()).padStart(2, "0");
+    stamp = `${day}/${mon} ${hh}:${mm}`;
+  }
+  return (
+    <button
+      onClick={onClick}
+      title={
+        active
+          ? `บันทึก "ไม่พบ" เมื่อ ${stamp} — คลิกเพื่อยกเลิก`
+          : "บันทึกว่าหาสินค้าไม่พบในร้าน"
+      }
+      className={`inline-flex items-center gap-1 px-2 py-1 text-[10px] font-bold rounded-lg active:scale-95 transition ${
+        active
+          ? "bg-rose-600 text-white hover:bg-rose-700"
+          : "bg-white border-2 border-rose-400 text-rose-700 hover:bg-rose-50"
+      }`}
+    >
+      <span>ไม่พบ</span>
+      {active && stamp && (
+        <span className="opacity-80 font-normal text-[9px]">{stamp}</span>
+      )}
+    </button>
+  );
+}
 
 function ConfirmButtons({
   entry,
