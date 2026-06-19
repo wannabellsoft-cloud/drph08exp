@@ -263,32 +263,39 @@ export async function getItemMasterStock(itemNo: string): Promise<number> {
 }
 
 // Map of itemNo → total Remaining Quantity in Ledger.
-// Tries the RPC first (one round-trip), but PostgREST has historically
-// lowercased TABLE-returning column names, so we read several casings
-// before giving up. If the RPC isn't deployed or returns nothing, the
-// fallback paginates the Ledger and sums client-side — with a stable
-// ORDER BY so the page boundaries don't skip rows.
+//
+// Strategy:
+// 1) Try the RPC. The new signature returns a single JSONB object and is
+//    not subject to PostgREST's row cap. The old TABLE-returning signature
+//    silently truncated at 1000 rows, so if the response comes back as an
+//    array of exactly the cap size we treat it as untrustworthy and fall
+//    through.
+// 2) Paginate the Ledger and sum client-side, in order of entryNo so the
+//    page boundaries are stable.
 export async function fetchRemainTotals(): Promise<Map<string, number>> {
   const map = new Map<string, number>();
 
   // 1) RPC
   try {
     const r = await sb().rpc("item_remain_total");
-    if (!r.error && Array.isArray(r.data) && r.data.length > 0) {
-      for (const row of r.data as any[]) {
-        const key = String(
-          row?.itemNo ?? row?.item_no ?? row?.itemno ?? "",
-        ).trim();
-        const total = Number(row?.total ?? 0);
-        if (key) map.set(key, total);
+    if (!r.error && r.data) {
+      if (typeof r.data === "object" && !Array.isArray(r.data)) {
+        // New JSONB signature — single object, no row cap.
+        for (const [k, v] of Object.entries(r.data as Record<string, number>)) {
+          const key = String(k).trim();
+          if (key) map.set(key, Number(v) || 0);
+        }
+        if (map.size > 0) return map;
       }
-      if (map.size > 0) return map;
+      // If it's an array (old TABLE signature), don't trust it — could be
+      // truncated at 1000. Fall through to pagination.
     }
   } catch {
     // fall through to paginated query
   }
 
   // 2) Paginated fallback
+  map.clear();
   const PAGE = 1000;
   let from = 0;
   while (true) {

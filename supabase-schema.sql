@@ -101,15 +101,23 @@ returns setof text language sql as $$
   where "documentNo" is not null and "documentNo" <> '';
 $$;
 
--- Sum of Remaining Quantity per Item No. across the whole Ledger. Used by
--- the Pre-count "Demo" and "Gift" browse tabs to show every catalogue item
--- alongside its current store-level remain in a single round-trip.
+-- Sum of Remaining Quantity per Item No. across the whole Ledger.
+-- Returns a single JSONB object { itemNo: total, ... } rather than a TABLE
+-- — PostgREST caps TABLE results at 1000 rows by default, which silently
+-- truncated big catalogues. A single JSONB value isn't subject to that cap.
+drop function if exists item_remain_total();
 create or replace function item_remain_total()
-returns table("itemNo" text, total numeric) language sql stable as $$
-  select "itemNo", sum("remainingQuantity")::numeric as total
-  from ledger
-  where "remainingQuantity" > 0 and "itemNo" is not null
-  group by "itemNo";
+returns jsonb language sql stable as $$
+  select coalesce(
+    jsonb_object_agg("itemNo", total),
+    '{}'::jsonb
+  )
+  from (
+    select "itemNo", sum("remainingQuantity")::numeric as total
+    from ledger
+    where "remainingQuantity" > 0 and "itemNo" is not null
+    group by "itemNo"
+  ) t;
 $$;
 
 create or replace function truncate_items()     returns void language sql as $$ truncate items;     $$;
