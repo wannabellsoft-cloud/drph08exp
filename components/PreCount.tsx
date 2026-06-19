@@ -26,6 +26,7 @@ import { classifyItem, CATEGORY_META } from "@/lib/itemClassify";
 import { useUI } from "./UI";
 import { PreCountCoverSheet } from "./PreCountCoverSheet";
 import { elementToPdfBlob, shareOrDownloadBlob } from "@/lib/pdf";
+import { exportPreCountAudit, downloadBlob } from "@/lib/excel";
 import {
   ScanIcon,
   PlusIcon,
