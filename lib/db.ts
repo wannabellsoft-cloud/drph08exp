@@ -250,10 +250,51 @@ export async function listItemsByCategoryRough(
 }
 
 // =========================================================
-// Pre-count "CF" (confirmed-present-in-store) toggles
+// Pre-count per-item status: "found" (Confirm) or "not-found" (ไม่พบสินค้า)
 // =========================================================
-export async function listConfirmations(): Promise<Map<string, string>> {
-  const map = new Map<string, string>();
+export type ConfirmationStatus = "found" | "not-found";
+export type ConfirmationEntry = { status: ConfirmationStatus; confirmedAt: string };
+
+export async function listConfirmations(): Promise<Map<string, ConfirmationEntry>> {
+  const map = new Map<string, ConfirmationEntry>();
+  const PAGE = 1000;
+  let from = 0;
+  while (true) {
+    const { data, error } = await sb()
+      .from(T_CONFIRMATIONS)
+      .select("itemNo, confirmedAt, status")
+      .order("itemNo", { ascending: true })
+      .range(from, from + PAGE - 1);
+    if (error) {
+      if (/relation .* does not exist/i.test(error.message)) return map;
+      // Older schema without status column — retry without it
+      if (/column .* does not exist/i.test(error.message)) {
+        return listConfirmationsLegacy();
+      }
+      throw error;
+    }
+    const chunk = (data ?? []) as Array<{
+      itemNo: string;
+      confirmedAt: string;
+      status?: string;
+    }>;
+    for (const row of chunk) {
+      if (!row.itemNo) continue;
+      const status: ConfirmationStatus =
+        row.status === "not-found" ? "not-found" : "found";
+      map.set(String(row.itemNo).trim(), {
+        status,
+        confirmedAt: row.confirmedAt,
+      });
+    }
+    if (chunk.length < PAGE) break;
+    from += PAGE;
+  }
+  return map;
+}
+
+async function listConfirmationsLegacy(): Promise<Map<string, ConfirmationEntry>> {
+  const map = new Map<string, ConfirmationEntry>();
   const PAGE = 1000;
   let from = 0;
   while (true) {
@@ -262,14 +303,14 @@ export async function listConfirmations(): Promise<Map<string, string>> {
       .select("itemNo, confirmedAt")
       .order("itemNo", { ascending: true })
       .range(from, from + PAGE - 1);
-    if (error) {
-      // If table doesn't exist yet, treat as empty
-      if (/relation .* does not exist/i.test(error.message)) return map;
-      throw error;
-    }
+    if (error) return map;
     const chunk = (data ?? []) as Array<{ itemNo: string; confirmedAt: string }>;
     for (const row of chunk) {
-      if (row.itemNo) map.set(String(row.itemNo).trim(), row.confirmedAt);
+      if (!row.itemNo) continue;
+      map.set(String(row.itemNo).trim(), {
+        status: "found",
+        confirmedAt: row.confirmedAt,
+      });
     }
     if (chunk.length < PAGE) break;
     from += PAGE;
@@ -277,15 +318,34 @@ export async function listConfirmations(): Promise<Map<string, string>> {
   return map;
 }
 
-export async function confirmItemPresent(itemNo: string) {
-  const { error } = await sb()
-    .from(T_CONFIRMATIONS)
-    .upsert({ itemNo, confirmedAt: new Date().toISOString() });
-  if (error) throw error;
+export async function setItemConfirmation(
+  itemNo: string,
+  status: ConfirmationStatus,
+) {
+  const payload: any = {
+    itemNo,
+    confirmedAt: new Date().toISOString(),
+    status,
+  };
+  const { error } = await sb().from(T_CONFIRMATIONS).upsert(payload);
+  if (error) {
+    // Fall back without status column for legacy schemas
+    if (/column .* does not exist/i.test(error.message)) {
+      const { error: e2 } = await sb()
+        .from(T_CONFIRMATIONS)
+        .upsert({ itemNo, confirmedAt: payload.confirmedAt });
+      if (e2) throw e2;
+      return;
+    }
+    throw error;
+  }
 }
 
-export async function unconfirmItemPresent(itemNo: string) {
-  const { error } = await sb().from(T_CONFIRMATIONS).delete().eq("itemNo", itemNo);
+export async function clearItemConfirmation(itemNo: string) {
+  const { error } = await sb()
+    .from(T_CONFIRMATIONS)
+    .delete()
+    .eq("itemNo", itemNo);
   if (error) throw error;
 }
 

@@ -79,13 +79,13 @@ create table if not exists journal (
   "appliedAt"           timestamptz,
   note                  text
 );
--- "CF" (confirmed-present-in-store) flags used by the Pre-count Demo/Gift
--- browse tabs. Store staff walks the shelf and toggles each item; one
--- row per item, presence == confirmed.
+-- Per-item presence flags used by the Pre-count Demo/Gift browse tabs.
+-- status: 'found' (Confirm) or 'not-found' (ไม่พบสินค้า).
 create table if not exists precount_confirmations (
   "itemNo"      text primary key,
   "confirmedAt" timestamptz default now()
 );
+alter table precount_confirmations add column if not exists status text default 'found';
 
 alter table journal add column if not exists "cartonId" text;
 create index if not exists journal_createdAt_idx  on journal("createdAt" desc);

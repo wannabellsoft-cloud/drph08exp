@@ -11,10 +11,11 @@ import {
   listItemsByCategoryRough,
   fetchRemainTotals,
   listConfirmations,
-  confirmItemPresent,
-  unconfirmItemPresent,
+  setItemConfirmation,
+  clearItemConfirmation,
   clearAllConfirmations,
 } from "@/lib/db";
+import type { ConfirmationEntry, ConfirmationStatus } from "@/lib/db";
 import type {
   Item,
   Transfer,
@@ -108,9 +109,9 @@ function ItemsBrowser({ category }: { category: "demo" | "gift" }) {
   const [loading, setLoading] = useState(false);
   const [q, setQ] = useState("");
   const [onlyInStock, setOnlyInStock] = useState(true);
-  const [hideConfirmed, setHideConfirmed] = useState(false);
+  const [hideDone, setHideDone] = useState(false);
   const [refreshKey, setRefreshKey] = useState(0);
-  const [confirmMap, setConfirmMap] = useState<Map<string, string>>(new Map());
+  const [confirmMap, setConfirmMap] = useState<Map<string, ConfirmationEntry>>(new Map());
 
   const [diag, setDiag] = useState<{ mapSize: number } | null>(null);
 
@@ -156,33 +157,34 @@ function ItemsBrowser({ category }: { category: "demo" | "gift" }) {
     };
   }, [category, refreshKey, ui]);
 
-  async function toggleConfirm(itemNo: string) {
+  async function toggleConfirm(itemNo: string, target: ConfirmationStatus) {
     const key = String(itemNo).trim();
-    const next = new Map(confirmMap);
-    const wasConfirmed = next.has(key);
-    if (wasConfirmed) {
+    const prev = confirmMap;
+    const current = prev.get(key);
+    const next = new Map(prev);
+    const willClear = current?.status === target;
+    if (willClear) {
       next.delete(key);
     } else {
-      next.set(key, new Date().toISOString());
+      next.set(key, { status: target, confirmedAt: new Date().toISOString() });
     }
     setConfirmMap(next); // optimistic
     try {
-      if (wasConfirmed) {
-        await unconfirmItemPresent(key);
+      if (willClear) {
+        await clearItemConfirmation(key);
       } else {
-        await confirmItemPresent(key);
+        await setItemConfirmation(key, target);
       }
     } catch (e: any) {
-      // revert
-      setConfirmMap(confirmMap);
-      ui.err("บันทึก CF ไม่สำเร็จ", e?.message ?? String(e));
+      setConfirmMap(prev); // revert
+      ui.err("บันทึกไม่สำเร็จ", e?.message ?? String(e));
     }
   }
 
   async function clearAllCF() {
     const yes = await ui.confirm({
-      title: `Reset CF ของทุกรายการ?`,
-      message: `รายการที่ CF แล้วทั้งหมด (${confirmMap.size} รายการ) จะถูกล้าง — เริ่มยืนยันใหม่ตั้งแต่ต้น`,
+      title: `Reset ทุกรายการ?`,
+      message: `รายการที่ Confirm หรือ "ไม่พบ" ทั้งหมด (${confirmMap.size} รายการ) จะถูกล้าง — เริ่มใหม่ตั้งแต่ต้น`,
       danger: true,
       confirmText: "Reset ทั้งหมด",
     });
@@ -190,7 +192,7 @@ function ItemsBrowser({ category }: { category: "demo" | "gift" }) {
     try {
       await clearAllConfirmations();
       setConfirmMap(new Map());
-      ui.ok("Reset CF แล้ว");
+      ui.ok("Reset แล้ว");
     } catch (e: any) {
       ui.err("Reset ไม่สำเร็จ", e?.message ?? String(e));
     }
@@ -200,7 +202,7 @@ function ItemsBrowser({ category }: { category: "demo" | "gift" }) {
     return rows.filter((r) => {
       const key = String(r.item.itemNo).trim();
       if (onlyInStock && r.remain <= 0) return false;
-      if (hideConfirmed && confirmMap.has(key)) return false;
+      if (hideDone && confirmMap.has(key)) return false;
       if (q) {
         const s = q.toLowerCase();
         const hay = `${r.item.itemNo} ${r.item.barcode ?? ""} ${r.item.description ?? ""} ${r.item.description2 ?? ""}`.toLowerCase();
@@ -208,21 +210,27 @@ function ItemsBrowser({ category }: { category: "demo" | "gift" }) {
       }
       return true;
     });
-  }, [rows, onlyInStock, hideConfirmed, q, confirmMap]);
+  }, [rows, onlyInStock, hideDone, q, confirmMap]);
 
   const stats = useMemo(() => {
     const inStock = rows.filter((r) => r.remain > 0);
     const totalRemain = rows.reduce((a, r) => a + r.remain, 0);
     const giftPaid = rows.filter((r) => r.category === "gift-paid").length;
-    const confirmedInCategory = rows.filter((r) =>
-      confirmMap.has(String(r.item.itemNo).trim()),
-    ).length;
+    let confirmed = 0;
+    let notFound = 0;
+    for (const r of rows) {
+      const e = confirmMap.get(String(r.item.itemNo).trim());
+      if (e?.status === "found") confirmed++;
+      else if (e?.status === "not-found") notFound++;
+    }
     return {
       total: rows.length,
       inStock: inStock.length,
       totalRemain,
       giftPaid,
-      confirmed: confirmedInCategory,
+      confirmed,
+      notFound,
+      done: confirmed + notFound,
     };
   }, [rows, confirmMap]);
 
@@ -234,7 +242,7 @@ function ItemsBrowser({ category }: { category: "demo" | "gift" }) {
   return (
     <div className="space-y-4">
       {/* Stats */}
-      <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
+      <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3">
         <StatCard label="รายการทั้งหมด" value={stats.total} tone="slate" />
         <StatCard label="มี Stock" value={stats.inStock} tone="emerald" />
         <StatCard label="Remain รวม" value={stats.totalRemain} tone={titleMeta.tone} />
@@ -243,7 +251,8 @@ function ItemsBrowser({ category }: { category: "demo" | "gift" }) {
         ) : (
           <StatCard label="ไม่มี Stock" value={stats.total - stats.inStock} tone="slate" />
         )}
-        <StatCard label="CF แล้ว" value={stats.confirmed} tone="emerald" />
+        <StatCard label="Confirm" value={stats.confirmed} tone="emerald" />
+        <StatCard label="ไม่พบ" value={stats.notFound} tone="rose" />
       </div>
 
       {/* Diagnostic when nothing has Remain */}
@@ -297,19 +306,19 @@ function ItemsBrowser({ category }: { category: "demo" | "gift" }) {
         <label className="flex items-center gap-1.5 text-xs text-slate-600 px-2 py-1.5 bg-white border border-slate-200 rounded-lg cursor-pointer">
           <input
             type="checkbox"
-            checked={hideConfirmed}
-            onChange={(e) => setHideConfirmed(e.target.checked)}
+            checked={hideDone}
+            onChange={(e) => setHideDone(e.target.checked)}
             className="accent-emerald-600"
           />
-          ซ่อนที่ CF แล้ว ({stats.confirmed})
+          ซ่อนที่ทำแล้ว ({stats.done})
         </label>
         <button
           onClick={clearAllCF}
           disabled={confirmMap.size === 0}
-          title="ล้าง CF ทั้งหมดทุกหมวด"
+          title="ล้างการตรวจสอบทั้งหมดทุกหมวด"
           className="flex items-center gap-1 px-3 py-1.5 bg-white border border-rose-300 text-rose-700 text-xs font-medium rounded-lg hover:bg-rose-50 disabled:opacity-30 shadow-sm transition"
         >
-          Reset CF
+          Reset
         </button>
         <button
           onClick={() => setRefreshKey((k) => k + 1)}
@@ -349,7 +358,7 @@ function ItemsBrowser({ category }: { category: "demo" | "gift" }) {
                   )}
                   <th className="text-center px-3 py-2.5 font-medium">หมวด</th>
                   <th className="text-right px-3 py-2.5 font-medium">Remain</th>
-                  <th className="text-center px-3 py-2.5 font-medium">CF</th>
+                  <th className="text-center px-3 py-2.5 font-medium">ตรวจสอบ</th>
                 </tr>
               </thead>
               <tbody>
@@ -362,17 +371,19 @@ function ItemsBrowser({ category }: { category: "demo" | "gift" }) {
                     slate: "bg-slate-100 text-slate-700",
                   };
                   const key = String(r.item.itemNo).trim();
-                  const confirmedAt = confirmMap.get(key);
+                  const conf = confirmMap.get(key);
+                  const rowBg =
+                    conf?.status === "found"
+                      ? "bg-emerald-50/40"
+                      : conf?.status === "not-found"
+                      ? "bg-rose-50/40"
+                      : r.remain <= 0
+                      ? "opacity-50"
+                      : "";
                   return (
                     <tr
                       key={r.item.itemNo}
-                      className={`border-t border-slate-100 hover:bg-slate-50/50 ${
-                        confirmedAt
-                          ? "bg-emerald-50/40"
-                          : r.remain <= 0
-                          ? "opacity-50"
-                          : ""
-                      }`}
+                      className={`border-t border-slate-100 hover:bg-slate-50/50 ${rowBg}`}
                     >
                       <td className="px-3 py-2 text-xs text-slate-400">{i + 1}</td>
                       <td className="px-3 py-2 font-mono text-xs font-semibold">
@@ -417,9 +428,10 @@ function ItemsBrowser({ category }: { category: "demo" | "gift" }) {
                         {r.remain}
                       </td>
                       <td className="px-3 py-2 text-center">
-                        <CFButton
-                          confirmedAt={confirmedAt}
-                          onClick={() => toggleConfirm(r.item.itemNo)}
+                        <ConfirmButtons
+                          entry={conf}
+                          onConfirm={() => toggleConfirm(r.item.itemNo, "found")}
+                          onNotFound={() => toggleConfirm(r.item.itemNo, "not-found")}
                         />
                       </td>
                     </tr>
@@ -435,7 +447,10 @@ function ItemsBrowser({ category }: { category: "demo" | "gift" }) {
                     {filtered.reduce((a, r) => a + r.remain, 0)}
                   </td>
                   <td className="px-3 py-2 text-center text-[10px] text-slate-500">
-                    {stats.confirmed} / {stats.total}
+                    <span className="text-emerald-700">{stats.confirmed}</span>
+                    <span className="text-slate-400 mx-0.5">·</span>
+                    <span className="text-rose-700">{stats.notFound}</span>
+                    <span className="text-slate-400"> / {stats.total}</span>
                   </td>
                 </tr>
               </tfoot>
@@ -1088,41 +1103,68 @@ function CountSection() {
 // Shared small components
 // ============================================================
 
-function CFButton({
-  confirmedAt,
-  onClick,
+function ConfirmButtons({
+  entry,
+  onConfirm,
+  onNotFound,
 }: {
-  confirmedAt?: string;
-  onClick: () => void;
+  entry?: ConfirmationEntry;
+  onConfirm: () => void;
+  onNotFound: () => void;
 }) {
-  if (confirmedAt) {
-    const t = new Date(confirmedAt);
+  const found = entry?.status === "found";
+  const notFound = entry?.status === "not-found";
+
+  let stamp = "";
+  if (entry?.confirmedAt) {
+    const t = new Date(entry.confirmedAt);
     const day = String(t.getDate()).padStart(2, "0");
     const mon = String(t.getMonth() + 1).padStart(2, "0");
     const hh = String(t.getHours()).padStart(2, "0");
     const mm = String(t.getMinutes()).padStart(2, "0");
-    return (
-      <button
-        onClick={onClick}
-        title={`CF เมื่อ ${t.toLocaleString("th-TH")} — คลิกเพื่อยกเลิก`}
-        className="inline-flex items-center gap-1 px-2 py-1 bg-emerald-600 text-white text-[10px] font-bold rounded-lg active:scale-95 hover:bg-emerald-700 transition"
-      >
-        <CheckIcon className="w-3 h-3" />
-        <span>CF</span>
-        <span className="opacity-80 font-normal text-[9px]">
-          {day}/{mon} {hh}:{mm}
-        </span>
-      </button>
-    );
+    stamp = `${day}/${mon} ${hh}:${mm}`;
   }
+
   return (
-    <button
-      onClick={onClick}
-      title="ยืนยันว่ามีสินค้านี้ในร้าน"
-      className="inline-flex items-center gap-1 px-3 py-1 bg-white border-2 border-emerald-500 text-emerald-700 text-[11px] font-bold rounded-lg hover:bg-emerald-50 active:scale-95 transition"
-    >
-      CF
-    </button>
+    <div className="inline-flex items-center gap-1">
+      <button
+        onClick={onConfirm}
+        title={
+          found
+            ? `Confirm เมื่อ ${stamp} — คลิกเพื่อยกเลิก`
+            : "ยืนยันว่ามีสินค้านี้ในร้าน"
+        }
+        className={`inline-flex items-center gap-1 px-2 py-1 text-[10px] font-bold rounded-lg active:scale-95 transition ${
+          found
+            ? "bg-emerald-600 text-white hover:bg-emerald-700"
+            : "bg-white border-2 border-emerald-500 text-emerald-700 hover:bg-emerald-50"
+        }`}
+      >
+        {found && <CheckIcon className="w-3 h-3" />}
+        <span>Confirm</span>
+        {found && stamp && (
+          <span className="opacity-80 font-normal text-[9px]">{stamp}</span>
+        )}
+      </button>
+      <button
+        onClick={onNotFound}
+        title={
+          notFound
+            ? `บันทึก "ไม่พบ" เมื่อ ${stamp} — คลิกเพื่อยกเลิก`
+            : "บันทึกว่าหาสินค้าไม่พบในร้าน"
+        }
+        className={`inline-flex items-center gap-1 px-2 py-1 text-[10px] font-bold rounded-lg active:scale-95 transition ${
+          notFound
+            ? "bg-rose-600 text-white hover:bg-rose-700"
+            : "bg-white border-2 border-rose-400 text-rose-700 hover:bg-rose-50"
+        }`}
+      >
+        <span>ไม่พบ</span>
+        {notFound && stamp && (
+          <span className="opacity-80 font-normal text-[9px]">{stamp}</span>
+        )}
+      </button>
+    </div>
   );
 }
 
