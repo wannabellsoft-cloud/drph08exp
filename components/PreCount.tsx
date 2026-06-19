@@ -35,6 +35,7 @@ import {
   GiftIcon,
   PrintIcon,
   ShareIcon,
+  DownloadIcon,
 } from "./Icons";
 
 const CameraScanner = dynamic(
@@ -181,6 +182,46 @@ function ItemsBrowser({ category }: { category: "demo" | "gift" }) {
     }
   }
 
+  function exportAudited() {
+    const checked = rows.filter((r) =>
+      confirmMap.has(String(r.item.itemNo).trim()),
+    );
+    if (checked.length === 0) {
+      ui.warn(
+        "ยังไม่มีรายการที่ตรวจสอบ",
+        'กดปุ่ม "Confirm" หรือ "ไม่พบ" ก่อนสักรายการแล้วลองใหม่',
+      );
+      return;
+    }
+    const auditRows = checked.map((r) => {
+      const key = String(r.item.itemNo).trim();
+      const conf = confirmMap.get(key)!;
+      return {
+        itemNo: r.item.itemNo,
+        description: r.item.description,
+        description2: r.item.description2,
+        barcode: r.item.barcode,
+        uom: r.item.baseUom,
+        unitPrice: r.item.unitPrice,
+        remain: r.remain,
+        status: conf.status,
+        confirmedAt: conf.confirmedAt,
+      };
+    });
+    const blob = exportPreCountAudit(auditRows, category);
+    const today = new Date().toISOString().slice(0, 10);
+    const prefix = category === "demo" ? "Demo-Audit" : "Gift-Audit";
+    downloadBlob(blob, `${prefix}-${today}.xlsx`);
+    const found = checked.filter(
+      (r) => confirmMap.get(String(r.item.itemNo).trim())?.status === "found",
+    ).length;
+    const notFound = checked.length - found;
+    ui.ok(
+      "Export สำเร็จ",
+      `${checked.length} รายการ (Confirm ${found} · ไม่พบ ${notFound})`,
+    );
+  }
+
   async function clearAllCF() {
     const yes = await ui.confirm({
       title: `Reset ทุกรายการ?`,
@@ -312,6 +353,16 @@ function ItemsBrowser({ category }: { category: "demo" | "gift" }) {
           />
           ซ่อนที่ทำแล้ว ({stats.done})
         </label>
+        <button
+          onClick={exportAudited}
+          disabled={stats.done === 0}
+          title={`Export Excel เฉพาะรายการ ${
+            category === "demo" ? "Demo" : "Gift"
+          } ที่ตรวจสอบแล้ว`}
+          className="flex items-center gap-1 px-3 py-1.5 bg-emerald-600 text-white text-xs font-semibold rounded-lg hover:bg-emerald-700 disabled:opacity-30 disabled:cursor-not-allowed shadow-sm transition"
+        >
+          <DownloadIcon className="w-3.5 h-3.5" /> Export Excel ({stats.done})
+        </button>
         <button
           onClick={clearAllCF}
           disabled={confirmMap.size === 0}

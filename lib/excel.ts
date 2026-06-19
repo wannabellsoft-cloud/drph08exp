@@ -312,6 +312,75 @@ export function exportJournalToBC(
   };
 }
 
+// ---------- Pre-count Audit Export ----------
+// Used by the Demo and Gift browse tabs to dump the items that the
+// store staff has already audited (Confirm / ไม่พบสินค้า) into a
+// single-sheet Excel so the result can be filed or shared.
+export type PreCountAuditRow = {
+  itemNo: string;
+  description?: string;
+  description2?: string;
+  barcode?: string;
+  uom?: string;
+  unitPrice?: number;
+  remain: number;
+  status: "found" | "not-found";
+  confirmedAt: string;
+};
+
+export function exportPreCountAudit(
+  rows: PreCountAuditRow[],
+  category: "demo" | "gift",
+): Blob {
+  const statusLabel: Record<string, string> = {
+    found: "พบสินค้า (Confirm)",
+    "not-found": "ไม่พบสินค้า",
+  };
+  const sorted = [...rows].sort((a, b) => {
+    if (a.status !== b.status) return a.status === "found" ? -1 : 1;
+    return a.itemNo.localeCompare(b.itemNo);
+  });
+  const out = sorted.map((r, i) => {
+    const base: Record<string, any> = {
+      "#": i + 1,
+      "Item No.": r.itemNo,
+      Description: r.description ?? "",
+      "Description 2": r.description2 ?? "",
+      Barcode: r.barcode ?? "",
+      UoM: r.uom ?? "",
+    };
+    if (category === "gift") {
+      base["Unit Price"] = r.unitPrice ?? 0;
+    }
+    base["Remain"] = r.remain;
+    base["สถานะ"] = statusLabel[r.status] ?? r.status;
+    base["วันที่ตรวจสอบ"] = r.confirmedAt
+      ? new Date(r.confirmedAt).toLocaleString("th-TH")
+      : "";
+    return base;
+  });
+  const header = [
+    "#",
+    "Item No.",
+    "Description",
+    "Description 2",
+    "Barcode",
+    "UoM",
+    ...(category === "gift" ? ["Unit Price"] : []),
+    "Remain",
+    "สถานะ",
+    "วันที่ตรวจสอบ",
+  ];
+  const ws = XLSX.utils.json_to_sheet(out, { header });
+  const wb = XLSX.utils.book_new();
+  const sheetName = category === "demo" ? "Demo Audit" : "Gift Audit";
+  XLSX.utils.book_append_sheet(wb, ws, sheetName);
+  const buf = XLSX.write(wb, { type: "array", bookType: "xlsx" });
+  return new Blob([buf], {
+    type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+  });
+}
+
 export function downloadBlob(blob: Blob, filename: string) {
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
